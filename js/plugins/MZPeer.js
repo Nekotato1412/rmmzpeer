@@ -170,6 +170,11 @@ $gameNetwork.destroySession = function() {
     console.log("Successfully destroyed the session.");
 };
 
+$gameNetwork.pushError = function(message) {
+    SceneManager.push(BestWaifu.MZPeer.Scene_ErrorAlert);
+    SceneManager.prepareNextScene(message);
+};
+
 $gameNetwork.onError = function(error) {
     $gameNetwork.destroySession();
     SceneManager.push(BestWaifu.MZPeer.Scene_ErrorAlert);
@@ -406,14 +411,13 @@ BestWaifu.MZPeer.Scene_JoinLobby.prototype.onData = function(data) {
 };
 
 BestWaifu.MZPeer.Scene_JoinLobby.prototype.onConnectionError = function(err) {
+    $gameNetwork.pushError("Failed to connect to host.");
     console.error(err);
-    // Show generic failure to connect message
-    this.popScene();
 };
 
 BestWaifu.MZPeer.Scene_JoinLobby.prototype.onRejected = function() {
     console.error("Host rejected connection.");
-    // Show rejected by host error
+    $gameNetwork.pushError("Host refused to connect.");
     this.popScene();
 };
 
