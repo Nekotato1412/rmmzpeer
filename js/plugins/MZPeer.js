@@ -249,6 +249,7 @@ BestWaifu.MZPeer.Sides = {
 
 $gameNetwork = {};
 $gameNetwork.username = "";
+$gameNetwork.offlineMode = false; // Used if we cannot connect to the traversal server
 
 $allPlayers = [];
 
@@ -341,7 +342,8 @@ $gameNetwork.makePeerId = function(lobby_id) {
 };
 
 $gameNetwork.createHostSession = function() {
-    if (!$gameNetwork.username) return
+    if (!$gameNetwork.username) return;
+    if ($gameNetwork.offlineMode) return;
     // We make an ID of our own here for user friendliness
     $gameNetwork.lobbyId = $gameNetwork.makeLobbyId();
     const peer = new Peer($gameNetwork.makePeerId($gameNetwork.lobbyId));
@@ -360,7 +362,8 @@ $gameNetwork.createHostSession = function() {
 };
 
 $gameNetwork.createGuestSession = function() {
-    if (!$gameNetwork.username) return
+    if (!$gameNetwork.username) return;
+    if ($gameNetwork.offlineMode) return;
     // We don't generate an ID here because we only need the host's id to be
     // user friendly. The peer server will automatically generate the ID.
     const peer = new Peer(); 
@@ -475,6 +478,7 @@ $gameNetwork.onError = function(error) {
         case "network":
         case "disconnected":
             message = "No connection to traversal server.";
+            $gameNetwork.offlineMode = true;
             break;
         case "invalid-id":
             message = "Invalid network ID detected.";
