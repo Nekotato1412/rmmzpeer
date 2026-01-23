@@ -707,6 +707,15 @@ BestWaifu.MZPeer.Scene_ErrorAlert.prototype.commandWindowRect = function() {
     return new Rectangle(wx, wy, ww, wh);
 };
 
+BestWaifu.MZPeer.isAlphaNumeric = function(char) {
+    const regex = /[a-z0-9]+/i
+    return regex.test(char);
+};
+
+BestWaifu.MZPeer.isInviteCodeChar = function(char) {
+    return BestWaifu.MZPeer.lobbyIdCharacters.includes(char);
+};
+
 //-----------------------------------------------------------------------------
 // Window_TextInput
 BestWaifu.MZPeer.Window_TextInput = function() {
@@ -721,6 +730,20 @@ BestWaifu.MZPeer.Window_TextInput.prototype.table = function() {
         Window_NameInput.LATIN1,
         Window_NameInput.LATIN2
     ];
+};
+
+BestWaifu.MZPeer.Window_TextInput.prototype.drawItem = function(index) {
+    const table = this.table();
+    const character = table[this._page][index];
+    const rect = this.itemLineRect(index);
+    if (this._editWindow) {
+        this.changePaintOpacity(this._editWindow.isValidChar(character));
+        if (!this._editWindow.isValidChar(character)) {
+            this.changeTextColor(ColorManager.textColor(7));
+        }
+    }
+    this.drawText(character, rect.x, rect.y, rect.width, "center");
+    this.resetTextColor();
 };
 
 BestWaifu.MZPeer.Window_TextInput.prototype.onNameOk = function() {
@@ -741,6 +764,15 @@ BestWaifu.MZPeer.Window_TextEdit.prototype.initialize = function(rect) {
     this._maxLength = 0;
     this._name = "";
     this.deactivate();
+};
+
+BestWaifu.MZPeer.Window_TextEdit.prototype.isValidChar = function(ch) {
+    return BestWaifu.MZPeer.isAlphaNumeric(ch);
+};
+
+BestWaifu.MZPeer.Window_TextEdit.prototype.add = function(ch) {
+    if (!this.isValidChar(ch)) return false;
+    return Window_NameEdit.prototype.add.call(this, ch);
 };
 
 BestWaifu.MZPeer.Window_TextEdit.prototype.setup = function(maxLength) {
