@@ -1167,8 +1167,15 @@ BestWaifu.MZPeer.Scene_NetplayOptions.prototype.createCommandWindow = function()
 };
 
 BestWaifu.MZPeer.Scene_NetplayOptions.prototype.onDisconnect = function() {
-    $gameNetwork.destroySession();
-    this.popScene();
+    if ($gameNetwork.side === BestWaifu.MZPeer.Sides.Host) {
+        $gameNetwork.destroySession();
+    }
+    if ($gameNetwork.side === BestWaifu.MZPeer.Sides.Guest) {
+        $gameNetwork.sendRequest(new BestWaifu.MZPeer.NetworkRequest(BestWaifu.MZPeer.NetworkRequest.Codes.DISCONNECT));
+        $gameNetwork.destroySession();
+    }
+    this.fadeOutAll();
+    SceneManager.goto(Scene_Title);
 };
 
 BestWaifu.MZPeer.Scene_NetplayOptions.prototype.onJoin = function() {
