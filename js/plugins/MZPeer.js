@@ -794,37 +794,8 @@ BestWaifu.MZPeer.Scene_JoinLobby.prototype.onAuthorized = function() {
     DataManager.setupNewGame();
     const req = new BestWaifu.MZPeer.NetworkRequest(BestWaifu.MZPeer.NetworkRequest.Codes.INIT);
     $gameNetwork.sendRequest(req);
+    this.fadeOutAll();
 };
-
-// TODO: Lift this out in to generic behavior for transfers, etc.
-/* BestWaifu.MZPeer.Scene_JoinLobby.prototype.onData = function(data) {
-    if (typeof data === "object") {
-        // Future proofing
-        if (data["message"]) {
-            if (data.message === "authorized") {
-                this.onAuthorized();
-            }
-        }
-
-        if (data["save"] && typeof data["save"] === "object") {
-            for (const key of Object.keys(data.save)) {
-                // I am aware this isn't super secure but it's the most compatible with plugins. 
-                // Host should be a trusted party.
-                if (DataManager._databaseFiles.some(e => e.name === key)) {
-                    window[key] = data.save[key];
-                }
-            }
-        }
-
-        if (data["mapId"]) {
-            const mapId = parseInt(data["mapId"]);
-            DataManager.loadMapData(mapId);
-            $gameMap.setup(mapId);
-            this.fadeOutAll();
-            SceneManager.goto(Scene_Map);
-        }
-    }
-}; */
 
 BestWaifu.MZPeer.Scene_JoinLobby.prototype.onConnectionError = function(err) {
     $gameNetwork.pushError("Failed to connect to host.");
