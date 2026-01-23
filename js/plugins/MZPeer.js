@@ -45,7 +45,7 @@ BestWaifu.MZPeer.lobbyIdLength = 10;
 BestWaifu.MZPeer.maxPlayers = 4;
 
 //-----------------------------------------------------------------------------
-// Network API
+// #region Network API
 //
 // Helper objects to interface with the network system.
 
@@ -281,9 +281,10 @@ BestWaifu.MZPeer.Remote_Player = function() {
 BestWaifu.MZPeer.Remote_Player.prototype = Object.create(Game_Character.prototype);
 BestWaifu.MZPeer.Remote_Player.prototype.constructor = BestWaifu.MZPeer.Remote_Player;
 
+// #endregion
 
 //-----------------------------------------------------------------------------
-// Plugin Commands
+// #region Plugin Commands
 //
 // Provide plugin commands for:
 // - Running an event on a certain side (e.g. for Global Events)
@@ -292,23 +293,34 @@ BestWaifu.MZPeer.Remote_Player.prototype.constructor = BestWaifu.MZPeer.Remote_P
 // - Kicking a guest
 // - Changing what actor a guest belongs to
 // - Reconnecting to last session
+// #endregion
+
 
 //-----------------------------------------------------------------------------
-// Script Calls
+// #region Script Calls
 //
 // Provide script calls for:
 // - Redefining what "Player" refers to in a move route
 
+
+
+
+
+//#endregion
+
+
 //-----------------------------------------------------------------------------
-// Common Event Hooks
+// #region Common Event Hooks
 //
 // Provide hooks for:
 // - A player joining the session
 // - A player leaving the session
 // - Being disconnected from the session
+//#endregion
+
 
 //-----------------------------------------------------------------------------
-// Lobbies/PeerJS
+// #region Lobbies/PeerJS
 //
 // Hosting, joining, and leaving lobbies. 
 // * The player that created the lobby is designated host.
@@ -624,7 +636,9 @@ Scene_Map.prototype.start = function() {
         }
     }
 };
+//#endregion
 
+//#region Common GUI Components
 
 //-----------------------------------------------------------------------------
 // Window_ErrorAlertCommand
@@ -748,7 +762,9 @@ BestWaifu.MZPeer.Window_TextEdit.prototype.refresh = function() {
     const rect = this.itemRect(this._index);
     this.setCursorRect(rect.x, rect.y, rect.width, rect.height);
 };
+//#endregion
 
+//#region Netplay Menus
 //-----------------------------------------------------------------------------
 // Scene_JoinLobby
 //
@@ -901,6 +917,7 @@ BestWaifu.MZPeer.Scene_JoinLobby.prototype.start = function() {
     Scene_MenuBase.prototype.start.call(this);
     this._editWindow.refresh();
 };
+
 
 //-----------------------------------------------------------------------------
 // Network Options
@@ -1183,24 +1200,35 @@ BestWaifu.MZPeer.Scene_NetplayOptions.prototype.start = function() {
     Scene_MenuBase.prototype.start.call(this);
     this._commandWindow.refresh();
 };
+//#endregion
 
 //-----------------------------------------------------------------------------
-// Character Syncing
+// #region Character Syncing
 //
 // Make the players visibly appear on screen and move around in real time
 
+
+//#endregion
+
 //-----------------------------------------------------------------------------
-// Data Syncing
+// #region Data Syncing
 //
 // Switches, variables, gold, exp, all of this should be synced
 
+
+//#endregion
+
 //-----------------------------------------------------------------------------
-// Event Command Syncing
+// #region Event Command Syncing
 //
 // When a player triggers an event command it 
 // should run according to what side the current player is on.
 
+//#endregion
+
 //-----------------------------------------------------------------------------
-// Battle Syncing
+// #region Battle Syncing
 //
 // The meat and potatos of it all. Complex syncing of battle mechanics and state.
+
+//#endregion
