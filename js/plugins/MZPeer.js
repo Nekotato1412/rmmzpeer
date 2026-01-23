@@ -31,8 +31,8 @@ BestWaifu.MZPeer.SET_USERNAME = String(BestWaifu.MZPeer.params["Set Username Tex
 
 BestWaifu.MZPeer.peerIdBase = "mzpeer-91fc5e8a3652ce-";
 BestWaifu.MZPeer.lobbyIdCharacters = [
-    '0','1','2','3','4', 
-    '5','6','7','8','9',
+    'Q','R','S','T','Z',
+    'U','V','W','X','Y',
     'A','B','C','D','E',
     'F','G','H','J','K',
     'L','M','N','O','P'
@@ -147,19 +147,19 @@ BestWaifu.MZPeer.NetworkData.prototype.setField = function(key, value) {
     }
 
     switch (field.type) {
-        case this.DataTypes.INT:
+        case BestWaifu.MZPeer.NetworkData.DataTypes.INT:
             if (!Number.isInteger(value)) throw new Error("Type mismatch. Expected an Integer.");
             break;
-        case this.DataTypes.FLOAT:
+        case BestWaifu.MZPeer.NetworkData.DataTypes.FLOAT:
             if (isNaN(Number(value))) throw new Error("Type mismatch. Expected a float.");
             break;
-        case this.DataTypes.ARRAY:
+        case BestWaifu.MZPeer.NetworkData.DataTypes.ARRAY:
             if (!Array.isArray(value)) throw new Error("Type mismatch. Expected an array.");
             break;
-        case this.DataTypes.STRING:
+        case BestWaifu.MZPeer.NetworkData.DataTypes.STRING:
             if (typeof value !== "string") throw new Error("Type mismatch. Expected a string.");
             break;
-        case this.DataTypes.OBJECT:
+        case BestWaifu.MZPeer.NetworkData.DataTypes.OBJECT:
             if (typeof value !== "object") throw new Error("Type mismatch. Expected an object.");
             break;
     }
@@ -211,7 +211,7 @@ BestWaifu.MZPeer.NetworkRequest.Codes = {
 
 BestWaifu.MZPeer.NetworkRequest.prototype.initialize = function(code=-1) {
     BestWaifu.MZPeer.NetworkData.prototype.initialize.call(this, "request");
-    this.addField(this.DataTypes.INT, "code");
+    this.addField(BestWaifu.MZPeer.NetworkData.DataTypes.INT, "code");
     this.setField("code", code);
 };
 
@@ -235,7 +235,7 @@ BestWaifu.MZPeer.NetworkResponse.Codes = {
 
 BestWaifu.MZPeer.NetworkResponse.prototype.initialize = function(code=-1) {
     BestWaifu.MZPeer.NetworkData.prototype.initialize.call(this, "response");
-    this.addField(this.DataTypes.INT, "code");
+    this.addField(BestWaifu.MZPeer.NetworkData.DataTypes.INT, "code");
     this.setField("code", code);
 };
 
@@ -713,6 +713,7 @@ BestWaifu.MZPeer.isAlphaNumeric = function(char) {
 };
 
 BestWaifu.MZPeer.isInviteCodeChar = function(char) {
+    if (char.length > 1) return true;
     return BestWaifu.MZPeer.lobbyIdCharacters.includes(char);
 };
 
@@ -849,6 +850,7 @@ BestWaifu.MZPeer.Scene_JoinLobby.prototype.create = function() {
 BestWaifu.MZPeer.Scene_JoinLobby.prototype.createEditWindow = function() {
     const rect = this.editWindowRect();
     this._editWindow = new BestWaifu.MZPeer.Window_TextEdit(rect);
+    this._editWindow.isValidChar = BestWaifu.MZPeer.isInviteCodeChar;
     this._editWindow.setup(this._maxLength);
     this.addWindow(this._editWindow);
 };
@@ -904,6 +906,7 @@ BestWaifu.MZPeer.Scene_JoinLobby.prototype.makeConnection = function(lobbyId) {
 
 BestWaifu.MZPeer.Scene_JoinLobby.prototype.onInputOk = function() {
     if (this._editWindow.name().length < BestWaifu.MZPeer.lobbyIdLength) {
+        $gameNetwork.destroySession();
         this.popScene();
         return;
     };
