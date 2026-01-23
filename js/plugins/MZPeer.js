@@ -828,6 +828,7 @@ BestWaifu.MZPeer.Scene_JoinLobby.prototype.onAuthorized = function() {
     const req = new BestWaifu.MZPeer.NetworkRequest(BestWaifu.MZPeer.NetworkRequest.Codes.INIT);
     $gameNetwork.sendRequest(req);
     this.fadeOutAll();
+    SceneManager.goto(BestWaifu.MZPeer.Scene_NetplayWaiting);
 };
 
 BestWaifu.MZPeer.Scene_JoinLobby.prototype.onConnectionError = function(err) {
@@ -1168,6 +1169,9 @@ BestWaifu.MZPeer.Scene_NetplayOptions.prototype.createCommandWindow = function()
 
 BestWaifu.MZPeer.Scene_NetplayOptions.prototype.onDisconnect = function() {
     if ($gameNetwork.side === BestWaifu.MZPeer.Sides.Host) {
+        $gameNetwork.sendData(
+            new BestWaifu.MZPeer.NetworkResponse(BestWaifu.MZPeer.NetworkResponse.Codes.DISCONNECT), 
+            BestWaifu.MZPeer.Sides.Guest);
         $gameNetwork.destroySession();
     }
     if ($gameNetwork.side === BestWaifu.MZPeer.Sides.Guest) {
@@ -1213,6 +1217,110 @@ BestWaifu.MZPeer.Scene_NetplayOptions.prototype.start = function() {
     Scene_MenuBase.prototype.start.call(this);
     this._commandWindow.refresh();
 };
+
+
+ //-----------------------------------------------------------------------------
+ // Scene_NetplayWaiting
+ //
+ // A scene to send the guest to while things are loading.
+BestWaifu.MZPeer.Scene_NetplayWaiting = function() {
+    this.initialize(...arguments);
+};
+
+BestWaifu.MZPeer.Scene_NetplayWaiting.prototype = Object.create(Scene_Base.prototype);
+BestWaifu.MZPeer.Scene_NetplayWaiting.prototype.constructor = BestWaifu.MZPeer.Scene_NetplayWaiting;
+
+BestWaifu.MZPeer.Scene_NetplayWaiting.prototype.initialize = function() {
+    this._animationFrames = 0;
+    Scene_Base.prototype.initialize.call(this);
+};
+
+BestWaifu.MZPeer.Scene_NetplayWaiting.prototype.create = function() {
+    Scene_Base.prototype.create.call(this);
+    this.createForeground();
+};
+
+BestWaifu.MZPeer.Scene_NetplayWaiting.prototype.createForeground = function() {
+    this._loadingSprite = new Sprite(
+        new Bitmap(Graphics.width, Graphics.height)
+    );
+    this.addChild(this._loadingSprite);
+};
+
+BestWaifu.MZPeer.Scene_NetplayWaiting.prototype.update = function() {
+    if (!this.isBusy()) {
+        this.animate();
+    }
+    Scene_Base.prototype.update.call(this);
+};
+
+BestWaifu.MZPeer.Scene_NetplayWaiting.prototype.circleX = function(order, bitmap, radius) {
+    const diameter = (radius * 2) * 1.25;
+    return ((bitmap.width / 2) - diameter) + (diameter * order)
+};
+
+BestWaifu.MZPeer.Scene_NetplayWaiting.prototype.circleY = function(order, bitmap, radius) {
+    const diameter = radius * 2;
+
+    let y = bitmap.height / 2;
+
+    if (this.activeCircleOrder() === order) {
+        y -= (this._animationFrames / 4);
+    }
+
+    return y;
+};
+
+BestWaifu.MZPeer.Scene_NetplayWaiting.prototype.activeCircleOrder = function() {
+    return Math.floor(this._animationFrames / 24);
+};
+
+BestWaifu.MZPeer.Scene_NetplayWaiting.prototype.animate = function() {
+    if (!this._loadingSprite) return;
+    if (this._animationFrames > 71) this._animationFrames = 0;
+
+    if (this._animationFrames === 0) {
+        AudioManager.playSe({name:"Ice1", pitch:100, volume:25})
+    }
+
+    if (this._animationFrames === 24) {
+        AudioManager.playSe({name:"Ice1", pitch:125, volume:25})
+    }
+
+    if (this._animationFrames === 48) {
+        AudioManager.playSe({name:"Ice1", pitch:135, volume:25})
+    }
+
+    const bitmap = this._loadingSprite.bitmap;
+    const circleRadius = 18;
+
+    bitmap.clear();
+
+    for (let i = 0; i < 3; i++) {
+        bitmap.drawCircle(
+        this.circleX(i, bitmap, circleRadius), 
+        this.circleY(i, bitmap, circleRadius), 
+        circleRadius, 
+        this.activeCircleOrder() === i ? "white" : "gray");
+    }
+
+    this._animationFrames++;
+};
+
+BestWaifu.MZPeer.Scene_NetplayWaiting.prototype.start = function() {
+    Scene_Base.prototype.start.call(this);
+    SceneManager.clearStack();
+};
+
+BestWaifu.MZPeer.Scene_NetplayWaiting.prototype.terminate = function() {
+    Scene_Base.prototype.terminate.call(this);
+    if (this._loadingSprite) {
+        this._loadingSprite.bitmap.destroy();
+    }
+    AudioManager.playSe({ "name": "Decision3", pitch: 200, volume: 25 })
+};
+
+
 //#endregion
 
 //-----------------------------------------------------------------------------
