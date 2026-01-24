@@ -1410,6 +1410,13 @@ Window_MenuCommand.prototype.isSaveEnabled = function() {
     return BestWaifu.MZPeer.Window_MenuCommand_isSaveEnabled.call(this);
 };
 
+// Disable game end as guest
+BestWaifu.MZPeer.Window_MenuCommand_isGameEndEnabled = Window_MenuCommand.prototype.isGameEndEnabled;
+Window_MenuCommand.prototype.isGameEndEnabled = function() {
+    if ($gameNetwork.side === BestWaifu.MZPeer.Sides.Guest) return false;
+    return BestWaifu.MZPeer.Window_MenuCommand_isGameEndEnabled.call(this);
+};
+
 //-----------------------------------------------------------------------------
 // #region Character Syncing
 //
