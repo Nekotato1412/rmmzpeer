@@ -14,6 +14,7 @@
  * @param Set Username Text
  * @type text
  * @default Set Username
+ * 
  *
  * @help
  * 
@@ -41,7 +42,6 @@ BestWaifu.MZPeer.lobbyIdCharacters = [
 BestWaifu.MZPeer.lobbyIdLength = 10;
 
 // Hard coded to work like Local Coop for now.
-// TODO: Join prevention switch
 BestWaifu.MZPeer.maxPlayers = 4;
 
 //-----------------------------------------------------------------------------
@@ -266,6 +266,17 @@ BestWaifu.MZPeer.SyncSaveData.prototype.loadSave = function() {
     $gameNetwork.sendRequest(new BestWaifu.MZPeer.NetworkRequest(BestWaifu.MZPeer.NetworkRequest.Codes.POST_SAVE_LOAD));
 };
 
+BestWaifu.MZPeer.SyncPlayerList = function() {
+    this.initialize(...arguments);
+};
+
+BestWaifu.MZPeer.SyncPlayerList.prototype = Object.create(BestWaifu.MZPeer.NetworkData.prototype);
+BestWaifu.MZPeer.SyncPlayerList.prototype.constructor = BestWaifu.MZPeer.SyncPlayerList;
+BestWaifu.MZPeer.SyncPlayerList.prototype.initialize = function() {
+    BestWaifu.MZPeer.NetworkData.prototype.initialize.call(this, "sync_player_list");
+    this.addField(BestWaifu.MZPeer.NetworkData.DataTypes.ARRAY, "list");
+};
+
 
 BestWaifu.MZPeer.Sides = {
     Common: 0, // Everyone
@@ -278,6 +289,7 @@ $gameNetwork = {};
 $gameNetwork.username = "";
 $gameNetwork.offlineMode = false; // Used if we cannot connect to the traversal server
 
+// Contains player object references
 $allPlayers = [];
 
 $gameNetwork.reset = function() {
@@ -285,6 +297,8 @@ $gameNetwork.reset = function() {
     $gameNetwork.lobbyId = ""; // The current Lobby ID
     $gameNetwork.hostPeerId = ""; //  The peer ID of the host.
     $gameNetwork.side = BestWaifu.MZPeer.Sides.Local; // Our side
+    $gameNetwork.playerList = []; // A list of connected players by username. Not ordered.
+    $gameNetwork.spawnablePlayers = []; // A queue of players waiting to spawn.
 
 
     // The game characters of all players in the session
@@ -297,7 +311,7 @@ $gameNetwork.reset = function() {
     $gameNetwork.open = false;
 
     $gameNetwork.peerConnections = []; // For juggling data connections and handling authorization as host
-    $gameNetwork.hostConnection = null; // For letting the host knows things as guest
+    $gameNetwork.hostConnection = null; // For letting the host know things as guest
 };
 
 // Technically for initializing but I'm not a pedant and it makes sense in later usages
@@ -309,18 +323,26 @@ BestWaifu.MZPeer.Remote_Player = function() {
 BestWaifu.MZPeer.Remote_Player.prototype = Object.create(Game_Character.prototype);
 BestWaifu.MZPeer.Remote_Player.prototype.constructor = BestWaifu.MZPeer.Remote_Player;
 
+BestWaifu.MZPeer.Remote_Player.prototype.initialize = function(username, actorId) {
+    this.username = username; // Used to identify remote players
+    this.actorId = actorId; // Used to keep the sprite consistent
+    Game_Character.prototype.initialize.call(this);
+};
+
+BestWaifu.MZPeer.Remote_Player.prototype.refresh = function() {
+    const actor = $gameActors.actor(this.actorId);
+    const characterName = actor ? actor.characterName() : "";
+    const characterIndex = actor ? actor.characterIndex() : 0;
+    this.setImage(characterName, characterIndex);
+};
+
 // #endregion
 
 //-----------------------------------------------------------------------------
 // #region Plugin Commands
 //
 // Provide plugin commands for:
-// - Triggering an event on a certain side (e.g. for Global Events)
-// - Disconnecting from session
-// - Disconnecting all guests
-// - Kicking a guest
-// - Changing what actor a guest belongs to
-// - Reconnecting to last session
+// - Spawning the last pending player at a given position
 // #endregion
 
 
@@ -343,7 +365,6 @@ BestWaifu.MZPeer.Remote_Player.prototype.constructor = BestWaifu.MZPeer.Remote_P
 // Provide hooks for:
 // - A player joining the session
 // - A player leaving the session
-// - Being disconnected from the session
 //#endregion
 
 
@@ -501,6 +522,13 @@ $gameNetwork.dropPeer = function(username) {
     }
 };
 
+$gameNetwork.makePlayerList = function() {
+    $gameNetwork.playerList = [$gameNetwork.username];
+    for (const peerConnection of $gameNetwork.peerConnections) {
+        $gameNetwork.playerList.push(peerConnection.metadata?.username);
+    }
+};
+
 $gameNetwork.errorQueue = [];
 $gameNetwork.pushError = function(message) {
     $gameNetwork.errorQueue.push(message);
@@ -598,16 +626,23 @@ $gameNetwork.onPeerConnection = function(dataConnection) {
         $gameNetwork.peerConnections.splice(existingIndex, 1);
     }
 
+    if ($gameNetwork.peerConnections.length + 1 > BestWaifu.MZPeer.maxPlayers) {
+        console.log("Rejection connection: Lobby is full.");
+        dataConnection.close();
+        return;
+    }
+
     console.log(`${username} connected.`);
+    $gameNetwork.peerConnections.push(dataConnection);
     dataConnection.on('data', $gameNetwork.onPeerData);
     dataConnection.on('close', $gameNetwork.onPeerDisconnection.bind(this, dataConnection));
-
-    $gameNetwork.peerConnections.push(dataConnection);
 };
 
 $gameNetwork.onPeerDisconnection = function(peerConnection) {
     console.log(`${peerConnection.metadata?.username} disconnected.`);
     $gameNetwork.peerConnections = $gameNetwork.peerConnections.filter(c => c.open);
+    $gameNetwork.makePlayerList(); // Refresh the player list
+    $gameNetwork.sendToGuests(new BestWaifu.MZPeer.SyncPlayerList($gameNetwork.playerList)); // Refresh the player list for guests
 };
 
 $gameNetwork.onPeerData = function(data) {
@@ -622,7 +657,6 @@ $gameNetwork.onPeerData = function(data) {
             break;
 
         case "response":
-            // If guests ever send responses (rare), handle safely
             console.warn("Received unexpected response from peer:", data);
             break;
 
@@ -647,8 +681,17 @@ $gameNetwork.handleRequest = function(request) {
             break;
         
         case BestWaifu.MZPeer.NetworkRequest.Codes.POST_SAVE_LOAD:
-            // TODO: Provide other players
-            // TODO: Run player join common event
+            $gameNetwork.makePlayerList();
+            const player_list_data = new BestWaifu.MZPeer.SyncPlayerList($gameNetwork.playerList);
+            $gameNetwork.sendResponse(request.username(), player_list_data);
+            
+            // Track the player in the numbering system
+            $gameSystem.addPlayer(request.username());
+            $gameNetwork.spawnablePlayers.push(request.username());
+
+            // TODO: Set PlayerJoined variable to player number
+            
+            // TODO: Run player join common event on host
             break;
         
         default:
@@ -1440,7 +1483,33 @@ Window_MenuCommand.prototype.isGameEndEnabled = function() {
 };
 
 //-----------------------------------------------------------------------------
-// #region Character Syncing
+// Bind Player Numbers to Usernames
+//
+BestWaifu.MZPeer.Game_System_initialize = Game_System.prototype.initialize;
+Game_System.prototype.initialize = function() {
+    this._players = { 1: $gameNetwork.username };
+    BestWaifu.MZPeer.Game_System_initialize.call(this);
+};
+
+Game_System.prototype.addPlayer = function(username) {
+    if (Object.values(this._players).includes(username)) return;
+    const currentPlayerCount = Object.keys(this._players).length;
+    this._players[currentPlayerCount + 1] = username;
+};
+
+Game_System.prototype.players = function() {
+    return this._players;
+};
+
+Game_System.prototype.numberForUser = function(username) {
+    for (const N of Object.keys(this._players)) {
+        if (this._players[N] == username) return N;
+    }
+    return 0;
+};
+
+//-----------------------------------------------------------------------------
+// #region Real Time Character Syncing
 //
 // Make the players visibly appear on screen and move around in real time
 
@@ -1448,7 +1517,7 @@ Window_MenuCommand.prototype.isGameEndEnabled = function() {
 //#endregion
 
 //-----------------------------------------------------------------------------
-// #region Data Syncing
+// #region Real Time Data Syncing
 //
 // Switches, variables, gold, exp, all of this should be synced
 
@@ -1456,10 +1525,11 @@ Window_MenuCommand.prototype.isGameEndEnabled = function() {
 //#endregion
 
 //-----------------------------------------------------------------------------
-// #region Event Command Syncing
+// #region Real Time Event Syncing
 //
-// When a player triggers an event command it 
+// When a player triggers an event it 
 // should run according to what side the current player is on.
+// Events should only be moved by the host
 
 //#endregion
 
