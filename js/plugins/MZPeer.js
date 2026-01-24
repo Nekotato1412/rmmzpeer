@@ -288,7 +288,7 @@ BestWaifu.MZPeer.Remote_Player.prototype.constructor = BestWaifu.MZPeer.Remote_P
 // #region Plugin Commands
 //
 // Provide plugin commands for:
-// - Running an event on a certain side (e.g. for Global Events)
+// - Triggering an event on a certain side (e.g. for Global Events)
 // - Disconnecting from session
 // - Disconnecting all guests
 // - Kicking a guest
@@ -465,14 +465,48 @@ $gameNetwork.destroySession = function() {
     console.log("Successfully destroyed the session.");
 };
 
+// Drop a peer
+$gameNetwork.dropPeer = function(username) {
+    const connIndex = $gameNetwork.peerConnections.findIndex(c => c.metadata.username === username);
+    if (connIndex >= 0) {
+        $gameNetwork.peerConnections[connIndex].close();
+        $gameNetwork.peerConnections.splice(connIndex, 1);
+    }
+};
+
+$gameNetwork.errorQueue = [];
 $gameNetwork.pushError = function(message) {
-    SceneManager.push(BestWaifu.MZPeer.Scene_ErrorAlert);
-    SceneManager.prepareNextScene(message);
+    $gameNetwork.errorQueue.push(message);
+};
+
+//#region General Connection Handling
+
+$gameNetwork.onHostConnectionError = function(error) {
+    $gameNetwork.destroySession();
+    SceneManager._scene.fadeOutAll();
+    SceneManager.goto(Scene_Title);
+    switch(error.type) {
+        case "network":
+            $gameNetwork.pushError("Lost connection to host.");
+            break;
+        case "disconnected":
+            $gameNetwork.pushError("Disconnected from host.");
+            break;
+        default:
+            $gameNetwork.pushError("Unknown netplay error.");
+    }
+    console.error(error);
+};
+
+$gameNetwork.onHostDisconnected = function() {
+    $gameNetwork.destroySession();
+    SceneManager._scene.fadeOutAll();
+    SceneManager.goto(Scene_Title);
+    $gameNetwork.pushError("Disconnected by host.");
 };
 
 $gameNetwork.onError = function(error) {
     $gameNetwork.destroySession();
-    SceneManager.push(BestWaifu.MZPeer.Scene_ErrorAlert);
     let message = "";
     switch(error.type) {
         case "network":
@@ -491,10 +525,10 @@ $gameNetwork.onError = function(error) {
             message = "Cannot connect to host.";
             break;
         case "socket-error":
-            message = "A socket error occured. WTF?";
+            message = "A socket error occured.";
             break;
         case "socket-closed":
-            message = "F*ck";
+            message = "The socket closed.";
             break;
         case "unavailable-id":
             message = "Network ID already exists. Try again."
@@ -503,11 +537,11 @@ $gameNetwork.onError = function(error) {
             message = "Something went wrong.";
             break;
     }
-    SceneManager.prepareNextScene(message + "\n" + error.message);
-    console.error(error);
+    $gameNetwork.pushError(message + "\n" + error.message);
 };
+//#endregion
 
-
+//#region Host Handling
 $gameNetwork.onPeerConnection = function(dataConnection) {
     if (!$gameNetwork.open) {
         console.log("Rejecting connection from remote peer. Not accepting new connections.");
@@ -559,13 +593,7 @@ $gameNetwork.onPeerData = function(data) {
             request.fromData(data);
             switch (request.getField("code")) {
                 case BestWaifu.MZPeer.NetworkRequest.Codes.DISCONNECT:
-                    // A guest requested a graceful disconnect
-                    console.log(`Guest ${data.username || "unknown"} requested disconnect.`);
-                    const connIndex = $gameNetwork.peerConnections.findIndex(c => c.metadata.username === data.username);
-                    if (connIndex >= 0) {
-                        $gameNetwork.peerConnections[connIndex].close();
-                        $gameNetwork.peerConnections.splice(connIndex, 1);
-                    }
+                    $gameNetwork.dropPeer(data.username);
                     break;
 
                 // Handle other request codes here
@@ -585,37 +613,19 @@ $gameNetwork.onPeerData = function(data) {
             break;
     }
 };
+//#endregion
 
+
+//#region Guest Handling
 $gameNetwork.onHostData = function(data) {
     if (typeof data !== "object") return;
     if (!data || !data.type) return;
 
     switch (data.type) {
         case "response":
-            if ($gameNetwork.side !== BestWaifu.MZPeer.Sides.Guest) return;
-
             const response = new BestWaifu.MZPeer.NetworkResponse();
             response.fromData(data);
-            console.log(`Recieved response from ${response.username}`)
-            switch (response.getField("code")) {
-                case BestWaifu.MZPeer.NetworkResponse.Codes.DISCONNECT:
-                        if ($gameNetwork.hostConnection && $gameNetwork.hostConnection.open) {
-                            $gameNetwork.hostConnection.close();
-                        }
-                        $gameNetwork.destroySession();
-                        $gameNetwork.pushError("Disconnected by host.");
-                        // Netplay sessions are launched from the title screen
-                        SceneManager.goto(Scene_Title);
-                    break;
-
-                case BestWaifu.MZPeer.NetworkResponse.Codes.RESET:
-                    // TODO: Reset game state
-                    break;
-
-                default:
-                    console.warn(`Unhandled host response code: ${response.getField("code")}`);
-                    break;
-            }
+            $gameNetwork.handleResponse(response);
             break;
 
         case "request":
@@ -627,6 +637,24 @@ $gameNetwork.onHostData = function(data) {
             break;
     }
 };
+
+$gameNetwork.handleResponse = function(response) {
+    console.log(`Recieved response from ${response.username()}`)
+    switch (response.getField("code")) {
+        case BestWaifu.MZPeer.NetworkResponse.Codes.DISCONNECT:
+            this.onHostDisconnected();
+            break;
+
+        case BestWaifu.MZPeer.NetworkResponse.Codes.RESET:
+            // TODO: Reset game state
+            break;
+
+        default:
+            console.warn(`Unhandled host response code: ${response.getField("code")}`);
+            break;
+    }
+};
+//#endregion
 
 //-----------------------------------------------------------------------------
 // Scene_Map
@@ -640,6 +668,19 @@ Scene_Map.prototype.start = function() {
         }
     }
 };
+
+BestWaifu.MZPeer.Scene_Base_update = Scene_Base.prototype.update;
+Scene_Base.prototype.update = function() {
+    BestWaifu.MZPeer.Scene_Base_update.call(this);
+    if (!this.isBusy() && !SceneManager.isSceneChanging()) {
+        const error = $gameNetwork.errorQueue.pop();
+        if (error) {
+            SceneManager.push(BestWaifu.MZPeer.Scene_ErrorAlert);
+            SceneManager.prepareNextScene(error);
+        }
+    }
+}
+
 //#endregion
 
 //#region Common GUI Components
@@ -684,6 +725,7 @@ BestWaifu.MZPeer.Scene_ErrorAlert.prototype.create = function() {
 
 BestWaifu.MZPeer.Scene_ErrorAlert.prototype.createMessageWindow = function() {
     this._messageWindow = new Window_Help(this.messageWindowRect());
+    if (!this._message) { this.popScene(); return; }
     this._messageWindow.setText(this._message);
     this.addWindow(this._messageWindow);
 };
@@ -837,13 +879,10 @@ BestWaifu.MZPeer.Scene_JoinLobby.prototype.onAuthorized = function() {
 
 BestWaifu.MZPeer.Scene_JoinLobby.prototype.onConnectionError = function(err) {
     $gameNetwork.pushError("Failed to connect to host.");
-    console.error(err);
 };
 
 BestWaifu.MZPeer.Scene_JoinLobby.prototype.onRejected = function() {
-    console.error("Host rejected connection.");
-    $gameNetwork.pushError("Host refused to connect.");
-    this.popScene();
+    $gameNetwork.pushError("Lost connection to host.");
 };
 
 BestWaifu.MZPeer.Scene_JoinLobby.prototype.create = function() {
@@ -904,8 +943,8 @@ BestWaifu.MZPeer.Scene_JoinLobby.prototype.makeConnection = function(lobbyId) {
 
     // Apply the listeners
     $gameNetwork.hostConnection.on('open', this.onConnected.bind(this));
-    $gameNetwork.hostConnection.on('close', this.onRejected.bind(this));
-    $gameNetwork.hostConnection.on('error', this.onConnectionError.bind(this));
+    $gameNetwork.hostConnection.on('close', $gameNetwork.onHostDisconnected);
+    $gameNetwork.hostConnection.on('error', $gameNetwork.onHostConnectionError);
     $gameNetwork.hostConnection.on('data', $gameNetwork.onHostData);
 };
 
