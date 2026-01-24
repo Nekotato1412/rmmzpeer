@@ -437,14 +437,14 @@ $gameNetwork.sendRequest = function(networkRequest) {
 };
 
 /**
- * Convenience function for sending responses
- * @param {BestWaifu.MZPeer.NetworkResponse} networkResponse 
+ * Convenience function for sending data to a guest
+ * @param {BestWaifu.MZPeer.NetworkData} networkData 
  */
-$gameNetwork.sendResponse = function(username, networkResponse) {
+$gameNetwork.sendResponse = function(username, networkData) {
     if ($gameNetwork.side !== BestWaifu.MZPeer.Sides.Host) return; // Only host can send responses
     for (const peer of $gameNetwork.peerConnections) {
         if (peer.metadata?.username === username) {
-            peer.send(networkResponse.data());
+            peer.send(networkData.data());
         }
     }
 };
@@ -495,7 +495,7 @@ $gameNetwork.onHostConnectionError = function(error) {
         default:
             $gameNetwork.pushError("Unknown netplay error.");
     }
-    console.error(error);
+    $gameNetwork.pushError(error.message);
 };
 
 $gameNetwork.onHostDisconnected = function() {
@@ -591,16 +591,7 @@ $gameNetwork.onPeerData = function(data) {
         case "request":
             const request = new BestWaifu.MZPeer.NetworkRequest();
             request.fromData(data);
-            switch (request.getField("code")) {
-                case BestWaifu.MZPeer.NetworkRequest.Codes.DISCONNECT:
-                    $gameNetwork.dropPeer(data.username);
-                    break;
-
-                // Handle other request codes here
-                default:
-                    console.warn("Unhandled request code:", request.getField("code"));
-                    break;
-            }
+            $gameNetwork.handleRequest(request);
             break;
 
         case "response":
@@ -613,6 +604,43 @@ $gameNetwork.onPeerData = function(data) {
             break;
     }
 };
+
+$gameNetwork.handleRequest = function(request) {
+    switch (request.getField("code")) {
+
+        case BestWaifu.MZPeer.NetworkRequest.Codes.DISCONNECT:
+            $gameNetwork.dropPeer(request.username());
+            break;
+
+        
+        case BestWaifu.MZPeer.NetworkRequest.Codes.INIT:
+            // TODO: Sync system data
+
+            // TODO: Sync screen data
+
+            // TODO: Sync timer data
+
+            // TODO: Sync switches data 
+
+            // TODO: Sync variables data
+
+            // TODO: Sync actors data
+
+            // TODO: Sync party data
+
+            // TODO: Sync player data
+
+            // TODO: Provide other players
+
+            // TODO: Run player join common event
+            break;
+        
+        default:
+            console.warn("Unhandled request code:", request.getField("code"));
+            break;
+    }
+};
+
 //#endregion
 
 
@@ -646,7 +674,10 @@ $gameNetwork.handleResponse = function(response) {
             break;
 
         case BestWaifu.MZPeer.NetworkResponse.Codes.RESET:
-            // TODO: Reset game state
+            this.fadeOutAll();
+            SceneManager.goto(BestWaifu.MZPeer.Scene_NetplayWaiting);
+            const req = new BestWaifu.MZPeer.NetworkRequest(BestWaifu.MZPeer.NetworkRequest.Codes.INIT);
+            $gameNetwork.sendRequest(req);
             break;
 
         default:
@@ -870,11 +901,10 @@ BestWaifu.MZPeer.Scene_JoinLobby.prototype.onConnected = function() {
 
 
 BestWaifu.MZPeer.Scene_JoinLobby.prototype.onAuthorized = function() {
-    DataManager.setupNewGame();
-    const req = new BestWaifu.MZPeer.NetworkRequest(BestWaifu.MZPeer.NetworkRequest.Codes.INIT);
-    $gameNetwork.sendRequest(req);
     this.fadeOutAll();
     SceneManager.goto(BestWaifu.MZPeer.Scene_NetplayWaiting);
+    const req = new BestWaifu.MZPeer.NetworkRequest(BestWaifu.MZPeer.NetworkRequest.Codes.INIT);
+    $gameNetwork.sendRequest(req);
 };
 
 BestWaifu.MZPeer.Scene_JoinLobby.prototype.onConnectionError = function(err) {
@@ -1365,6 +1395,20 @@ BestWaifu.MZPeer.Scene_NetplayWaiting.prototype.terminate = function() {
 
 
 //#endregion
+
+
+// Disable saving as guest
+BestWaifu.MZPeer.Scene_Map_shouldAutosave = Scene_Map.prototype.shouldAutosave;
+Scene_Map.prototype.shouldAutosave = function() {
+    if ($gameNetwork.side === BestWaifu.MZPeer.Sides.Guest) return false;
+    return BestWaifu.MZPeer.Scene_Map_shouldAutosave.call(this);
+};
+
+BestWaifu.MZPeer.Window_MenuCommand_isSaveEnabled = Window_MenuCommand.prototype.isSaveEnabled;
+Window_MenuCommand.prototype.isSaveEnabled = function() {
+    if ($gameNetwork.side === BestWaifu.MZPeer.Sides.Guest) return false;
+    return BestWaifu.MZPeer.Window_MenuCommand_isSaveEnabled.call(this);
+};
 
 //-----------------------------------------------------------------------------
 // #region Character Syncing
