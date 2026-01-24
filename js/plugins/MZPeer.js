@@ -206,7 +206,8 @@ BestWaifu.MZPeer.NetworkRequest.prototype.constructor = BestWaifu.MZPeer.Network
 // response.
 BestWaifu.MZPeer.NetworkRequest.Codes = {
     "INIT": 0, // Let the host know we're ready to recieve setup data
-    "DISCONNECT": 1, // Used for a graceful disconnection
+    "DISCONNECT": 1, // Used for a graceful disconnection,
+    "POST_SAVE_LOAD": 2 // Take us to the next init step
 };
 
 BestWaifu.MZPeer.NetworkRequest.prototype.initialize = function(code=-1) {
@@ -237,6 +238,32 @@ BestWaifu.MZPeer.NetworkResponse.prototype.initialize = function(code=-1) {
     BestWaifu.MZPeer.NetworkData.prototype.initialize.call(this, "response");
     this.addField(BestWaifu.MZPeer.NetworkData.DataTypes.INT, "code");
     this.setField("code", code);
+};
+
+
+BestWaifu.MZPeer.SyncSaveData = function() {
+    this.initialize(...arguments);
+};
+
+BestWaifu.MZPeer.SyncSaveData.prototype = Object.create(BestWaifu.MZPeer.NetworkData.prototype);
+BestWaifu.MZPeer.SyncSaveData.prototype.initialize = function() {
+    BestWaifu.MZPeer.NetworkData.prototype.initialize.call(this, "sync_save_data");
+    this.addField(BestWaifu.MZPeer.NetworkData.DataTypes.STRING, "save_json");
+};
+
+BestWaifu.MZPeer.SyncSaveData.prototype.makeSave = function() {
+    const contents = DataManager.makeSaveContents();
+    this.setField("save_json", JsonEx.stringify(contents));
+};
+
+BestWaifu.MZPeer.SyncSaveData.prototype.loadSave = function() {
+    const contents = JsonEx.parse(this.getField("save_json"));
+    DataManager.extractSaveContents(contents);
+    $gamePlayer.refresh();
+    $gameMap.requestRefresh();
+
+    // Let the host know we are ready for step 2
+    $gameNetwork.sendRequest(new BestWaifu.MZPeer.NetworkRequest(BestWaifu.MZPeer.NetworkRequest.Codes.POST_SAVE_LOAD));
 };
 
 
@@ -614,24 +641,13 @@ $gameNetwork.handleRequest = function(request) {
 
         
         case BestWaifu.MZPeer.NetworkRequest.Codes.INIT:
-            // TODO: Sync system data
-
-            // TODO: Sync screen data
-
-            // TODO: Sync timer data
-
-            // TODO: Sync switches data 
-
-            // TODO: Sync variables data
-
-            // TODO: Sync actors data
-
-            // TODO: Sync party data
-
-            // TODO: Sync player data
-
+            const save_sync = new BestWaifu.MZPeer.SyncSaveData();
+            save_sync.makeSave();
+            $gameNetwork.sendResponse(request.username(), save_sync);
+            break;
+        
+        case BestWaifu.MZPeer.NetworkRequest.Codes.POST_SAVE_LOAD:
             // TODO: Provide other players
-
             // TODO: Run player join common event
             break;
         
@@ -655,6 +671,12 @@ $gameNetwork.onHostData = function(data) {
             response.fromData(data);
             $gameNetwork.handleResponse(response);
             break;
+        
+        case "sync_save_data":
+            const save_data_sync = new BestWaifu.MZPeer.SyncSaveData();
+            save_data_sync.fromData(data);
+            save_data_sync.loadSave();
+
 
         case "request":
             console.warn("Unexpected request from host:", data);
