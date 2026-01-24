@@ -15,6 +15,25 @@
  * @type text
  * @default Set Username
  * 
+ * @param Player Join Common Event
+ * @desc The common event to call on player join.
+ * @type number
+ * @default 0
+ * 
+ * @param Player Joined Variable
+ * @desc The variable to store the player number that joined.
+ * @type variable
+ * @default 0
+ * 
+ * @param Player Leave Common Event
+ * @desc The common event to call on player leave.
+ * @type number
+ * @default 0
+ * 
+ * @param Player Left Variable
+ * @desc The variable to store the player number that left.
+ * @type variable
+ * @default 0
  *
  * @help
  * 
@@ -28,6 +47,12 @@ BestWaifu.MZPeer.params = PluginManager.parameters("MZPeer");
 BestWaifu.MZPeer.ENTER_ROOM_CODE = String(BestWaifu.MZPeer.params["Enter Room Code Text"] || "Enter Room Code");
 BestWaifu.MZPeer.DISCONNECT = String(BestWaifu.MZPeer.params["Disconnect Text"] || "Disconnect");
 BestWaifu.MZPeer.SET_USERNAME = String(BestWaifu.MZPeer.params["Set Username Text"] || "Set Username");
+
+BestWaifu.MZPeer.PlayerJoinCE = parseInt(BestWaifu.MZPeer.params["Player Join Common Event"]) || 0;
+BestWaifu.MZPeer.PlayerJoinVar = parseInt(BestWaifu.MZPeer.params["Player Join Variable"]) || 0;
+
+BestWaifu.MZPeer.PlayerLeaveCE = parseInt(BestWaifu.MZPeer.params["Player Leave Common Event"]) || 0;
+BestWaifu.MZPeer.PlayerLeaveVar = parseInt(BestWaifu.MZPeer.params["Player Leave Variable"]) || 0;
 
 
 BestWaifu.MZPeer.peerIdBase = "mzpeer-91fc5e8a3652ce-";
@@ -639,10 +664,19 @@ $gameNetwork.onPeerConnection = function(dataConnection) {
 };
 
 $gameNetwork.onPeerDisconnection = function(peerConnection) {
+
     console.log(`${peerConnection.metadata?.username} disconnected.`);
     $gameNetwork.peerConnections = $gameNetwork.peerConnections.filter(c => c.open);
+
     $gameNetwork.makePlayerList(); // Refresh the player list
     $gameNetwork.sendToGuests(new BestWaifu.MZPeer.SyncPlayerList($gameNetwork.playerList)); // Refresh the player list for guests
+
+    if (BestWaifu.MZPeer.PlayerLeaveVar > 0) {
+        $gameVariables.setValue(BestWaifu.MZPeer.PlayerLeaveVar, $gameSystem.numberForUser(peerConnection.metadata?.username));
+    }
+    if (BestWaifu.MZPeer.PlayerLeaveCE > 0) {
+        $gameTemp.reserveCommonEvent(BestWaifu.MZPeer.PlayerLeaveCE);
+    }
 };
 
 $gameNetwork.onPeerData = function(data) {
@@ -683,15 +717,19 @@ $gameNetwork.handleRequest = function(request) {
         case BestWaifu.MZPeer.NetworkRequest.Codes.POST_SAVE_LOAD:
             $gameNetwork.makePlayerList();
             const player_list_data = new BestWaifu.MZPeer.SyncPlayerList($gameNetwork.playerList);
-            $gameNetwork.sendResponse(request.username(), player_list_data);
+            $gameNetwork.sendToGuests(player_list_data);
             
             // Track the player in the numbering system
             $gameSystem.addPlayer(request.username());
             $gameNetwork.spawnablePlayers.push(request.username());
 
-            // TODO: Set PlayerJoined variable to player number
+            if (BestWaifu.MZPeer.PlayerJoinVar > 0) {
+                $gameVariables.setValue(BestWaifu.MZPeer.PlayerJoinVar, $gameSystem.numberForUser(request.username()));
+            }
             
-            // TODO: Run player join common event on host
+            if (BestWaifu.MZPeer.PlayerJoinCE > 0) {
+                $gameTemp.reserveCommonEvent(BestWaifu.MZPeer.PlayerJoinCE);
+            }
             break;
         
         default:
