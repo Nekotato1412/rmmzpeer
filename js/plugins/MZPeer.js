@@ -214,6 +214,8 @@ BestWaifu.MZPeer.NetworkData.prototype.fromData = function(data) {
 };
 
 
+// NetworkDataSubTypes
+
 /**
  * Data to send to the host to invoke a response
  * @param {BestWaifu.MZPeer.NetworkRequest.Codes} code 
@@ -316,6 +318,174 @@ BestWaifu.MZPeer.SyncPlayerCreation.prototype.initialize = function() {
 };
 
 
+BestWaifu.MZPeer.SyncPlayerMovement = function() {
+    this.initialize(...arguments);
+};
+
+BestWaifu.MZPeer.SyncPlayerMovement.prototype = Object.create(BestWaifu.MZPeer.NetworkData.prototype);
+BestWaifu.MZPeer.SyncPlayerMovement.prototype.constructor = BestWaifu.MZPeer.SyncPlayerMovement;
+BestWaifu.MZPeer.SyncPlayerMovement.prototype.initialize = function() {
+    BestWaifu.MZPeer.NetworkData.prototype.initialize.call(this, "sync_player_movement");
+    this.addField(BestWaifu.MZPeer.NetworkData.DataTypes.INT, "direction");
+    this.addField(BestWaifu.MZPeer.NetworkData.DataTypes.INT, "speed");
+};
+
+/** Used for syncing the orientation of a player. */
+BestWaifu.MZPeer.SyncPlayerOrientation = function() {
+    this.initialize(...arguments);
+};
+
+BestWaifu.MZPeer.SyncPlayerOrientation.prototype = Object.create(BestWaifu.MZPeer.NetworkData.prototype);
+BestWaifu.MZPeer.SyncPlayerOrientation.prototype.constructor = BestWaifu.MZPeer.SyncPlayerOrientation;
+BestWaifu.MZPeer.SyncPlayerOrientation.prototype.initialize = function() {
+    BestWaifu.MZPeer.NetworkData.prototype.initialize.call(this, "sync_player_position");
+    this.addField(BestWaifu.MZPeer.NetworkData.DataTypes.INT, "direction");
+    this.addField(BestWaifu.MZPeer.NetworkData.DataTypes.INT, "x");
+    this.addField(BestWaifu.MZPeer.NetworkData.DataTypes.INT, "y");
+};
+
+
+/** Stores network data inside of itself and the time it was created in the form of ticks. */
+BestWaifu.MZPeer.NetworkGraphNode = function() {
+    this.initialize(...arguments);
+};
+
+BestWaifu.MZPeer.NetworkGraphNode.prototype = Object.create(BestWaifu.MZPeer.NetworkData.prototype);
+BestWaifu.MZPeer.NetworkGraphNode.prototype.constructor = BestWaifu.MZPeer.NetworkGraphNode;
+BestWaifu.MZPeer.NetworkGraphNode.prototype.initialize = function() {
+    BestWaifu.MZPeer.NetworkData.prototype.initialize.call(this, "network_graph_node");
+    this.addField(BestWaifu.MZPeer.NetworkData.DataTypes.OBJECT, "network_data");
+    this.addField(BestWaifu.MZPeer.NetworkData.DataTypes.INT, "tick");
+};
+
+/** Used for creating new nodes to be added to a graph. */
+BestWaifu.MZPeer.NetworkGraphNode.create = function(tick, network_data) {
+    const network_graph_node = new BestWaifu.MZPeer.NetworkGraphNode();
+    network_graph_node.setField("tick", tick);
+    network_graph_node.setField("network_data", network_data.data());
+    return network_graph_node;
+};
+
+/** Use to apply the state for this part of the graph's history. */
+BestWaifu.MZPeer.NetworkGraphNode.prototype.apply = function() {
+    this.handleApply(this.getField("network_data"));
+};
+
+/** Get the network data as a NetworkData object */
+BestWaifu.MZPeer.NetworkGraphNode.prototype.networkData = function() {
+    const data = this.getField("network_data");
+    const networkData = new BestWaifu.MZPeer.NetworkData(data.type);
+    networkData.fromData(data);
+    return networkData;
+};
+
+/** Callback function for defining this node's apply behavior. */
+BestWaifu.MZPeer.NetworkGraphNode.prototype.handleApply = function(data) {}
+
+/** A continuous graph of networked actions taken since initialization. */
+BestWaifu.MZPeer.NetworkGraph = function() {
+    this.initialize(...arguments);
+};
+
+BestWaifu.MZPeer.NetworkData.prototype = Object.create(BestWaifu.MZPeer.NetworkData.prototype);
+BestWaifu.MZPeer.NetworkGraph.prototype.constructor = BestWaifu.MZPeer.NetworkGraph;
+BestWaifu.MZPeer.NetworkGraph.prototype.initialize = function() {
+    BestWaifu.MZPeer.NetworkData.prototype.initialize.call(this, "network_graph");
+    this.addField(BestWaifu.MZPeer.NetworkData.DataTypes.INT, "tick");
+    this.addField(BestWaifu.MZPeer.NetworkData.DataTypes.ARRAY, "history");
+    this._nodes = [];
+};
+
+BestWaifu.MZPeer.NetworkGraph.prototype.tick = function() {
+    this.setField("tick", this.getField("tick", $gameNetwork.tick) + 1);
+    $gameNetwork.tick = this.getField("tick");
+};
+
+/** Apply the entire graph. Used for catching up or verifying sync. */
+BestWaifu.MZPeer.NetworkGraph.prototype.apply = function() {
+    for (const node of this._nodes) {
+        const tick = node.getField("tick", $gameNetwork.tick);
+        if (tick <= $gameNetwork.tick) continue; // Skip ticks we are ahead of.
+        if (tick > $gameNetwork.tick) {
+            // We know we're behind so we catch up
+            node.apply();
+            this.tick();
+        }
+    }
+};
+
+/** Get the latest node. Nodes are always ticked in order and you cannot have two nodes on the same tick. */
+BestWaifu.MZPeer.NetworkGraph.prototype.latestNode = function() {
+    if (this._nodes.length < 1) return null;
+    return this._nodes[this._nodes.length - 1];
+};
+
+BestWaifu.MZPeer.NetworkGraph.prototype.latestTick = function() {
+    const latestNode = this.latestNode();
+    if (!latestNode) return 0;
+    return latestNode.getField("tick", 0);
+};
+
+BestWaifu.MZPeer.NetworkGraph.SyncStatuses = {
+    "NETWORK_BEHIND": 0,
+    "NETWORK_SYNCED": 1,
+    "NETWORK_AHEAD": 2
+};
+
+/** Used to quickly identify and fix types of desync. */
+BestWaifu.MZPeer.NetworkGraph.prototype.syncStatus = function() {
+    const latestNode = this.latestNode();
+    if (!latestNode) return BestWaifu.MZPeer.NetworkGraph.SyncStatuses.NETWORK_SYNCED;
+    const latestTick = latestNode.getField("tick", 0);
+    if ($gameNetwork.tick < latestTick) return BestWaifu.MZPeer.NetworkGraph.SyncStatuses.NETWORK_BEHIND;
+    if ($gameNetwork.tick > latestTick) return BestWaifu.MZPeer.NetworkGraph.SyncStatuses.NETWORK_AHEAD;
+    return BestWaifu.MZPeer.NetworkGraph.SyncStatuses.NETWORK_SYNCED;
+};
+
+/** Completely clear the graph. Do this on re-initialization to avoid a stupid long history eating memory over time. */
+BestWaifu.MZPeer.NetworkGraph.prototype.clear = function() {
+    this.setField("tick", 0);
+    $gameNetwork.tick = 0;
+    this._nodes = [];
+};
+
+/** Merge in another graph with ours with the given apply function for each node merged. */
+BestWaifu.MZPeer.NetworkGraph.prototype.merge = function(other_graph, onApply=function(data){}) {
+    for (const node of other_graph._nodes) {
+        if (node.tick <= this.latestTick()) continue;
+        this.addNode(node.networkData(), onApply);
+    }
+};
+
+/** Add a node to the graph timeline holding the given network data with the given callback function. */
+BestWaifu.MZPeer.NetworkGraph.prototype.addNode = function(network_data, onApply=function(data){}) {
+    this.tick();
+    const new_node = new BestWaifu.MZPeer.NetworkGraphNode.create(this.tick, network_data);
+    new_node.handleApply = onApply;
+    this._nodes.push(new_node);
+};
+
+/** Load an entire graph from history data. */
+BestWaifu.MZPeer.NetworkGraph.prototype.fromHistory = function(history) {
+    for (const data of history) {
+        const node = new BestWaifu.MZPeer.NetworkGraphNode();
+        node.fromData(data);
+        this._nodes.push(node);
+    }
+};
+
+BestWaifu.MZPeer.NetworkGraph.prototype.data = function() {
+    // Make the node data raw before storing it in the history field.
+    const history = [];
+    for (const node of this._nodes) {
+        history.push(node.data());
+    }
+    this.setField("history", history);
+    return BestWaifu.MZPeer.NetworkData.prototype.data.call(this);
+};
+
+
+
 BestWaifu.MZPeer.Sides = {
     Common: 0, // Everyone
     Local: 1, // Just me (Offline)
@@ -339,6 +509,7 @@ $gameNetwork.reset = function() {
     $gameNetwork.side = BestWaifu.MZPeer.Sides.Local; // Our side
     $gameNetwork.playerList = []; // A list of connected players by username. Not ordered.
     $gameNetwork.spawnablePlayers = []; // A queue of players waiting to spawn.
+    $gameNetwork.tick = 0; // Used to track the current time
 
 
     // The game characters of all players in the session
@@ -372,7 +543,13 @@ BestWaifu.MZPeer.Remote_Player.prototype.constructor = BestWaifu.MZPeer.Remote_P
 
 BestWaifu.MZPeer.Remote_Player.prototype.initialize = function(username) {
     this.username = username; // Used to identify remote players
+
     Game_Character.prototype.initialize.call(this);
+};
+
+BestWaifu.MZPeer.Remote_Player.prototype.update = function() {
+    Game_Character.prototype.update.call(this);
+    console.log("Updating..")
 };
 
 BestWaifu.MZPeer.Remote_Player.prototype.actor = function() {
@@ -450,6 +627,7 @@ $gameNetwork.createHostSession = function() {
 
     $gameNetwork.peer = peer;
     $gameNetwork.side = BestWaifu.MZPeer.Sides.Host;
+
     return peer;
 };
 
@@ -811,8 +989,7 @@ $gameNetwork.onHostData = function(data) {
         case "sync_player_creation":
             const player_creation_sync = new BestWaifu.MZPeer.SyncPlayerCreation();
             player_creation_sync.fromData(data);
-            const username = player_creation_sync.getField("username");
-            if (username == $gameNetwork.username) {
+            if (player_creation_sync.getField("username") == $gameNetwork.username) {
                 SceneManager.goto(Scene_Map);
             } else {
                 $gameNetwork.createRemotePlayer(
@@ -1732,11 +1909,10 @@ Game_Player.prototype.refresh = function() {
     }
 };
 
-// TODO: Add functionality for destroying players on disconnect
+// TODO: Add functionality for destroying remote players on disconnect
 
-// Guest should only move itself after host confirms they did
 
-// Host should replicate its movement to all Guests
+// TODO: Add functionality for syncing movement reliably
 
 //#endregion
 
