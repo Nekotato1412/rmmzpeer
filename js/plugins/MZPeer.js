@@ -569,6 +569,12 @@ Game_Character.prototype.update = function() {
     BestWaifu.MZPeer.Game_Character_update.call(this);
 };
 
+BestWaifu.MZPeer.Game_Character_locate = Game_Character.prototype.locate;
+Game_Character.prototype.locate = function(x, y) {
+    this._remoteMoveQueue = []; // Clear move queue to avoid going out of sync
+    BestWaifu.MZPeer.Game_Character_locate.call(this, x, y);
+}
+
 Game_Character.prototype.moveByNetwork = function() {
     if (!this._remoteMoveQueue.length) return;
     if (!this.isMoving()) {
