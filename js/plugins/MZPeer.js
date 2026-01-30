@@ -454,6 +454,8 @@ BestWaifu.MZPeer.NetworkGraph.SyncStatuses = {
     "NETWORK_AHEAD": 2
 };
 
+// TODO: Limit the size of the graph to 256 items to avoid memory leaks
+
 /** Used to quickly identify and fix types of desync. */
 BestWaifu.MZPeer.NetworkGraph.prototype.syncStatus = function () {
     const latestNode = this.latestNode();
@@ -534,7 +536,12 @@ $gameNetwork.reset = function () {
     $gameNetwork.side = BestWaifu.MZPeer.Sides.Local; // Our side
     $gameNetwork.playerList = []; // A list of connected players by username. Not ordered.
     $gameNetwork.spawnablePlayers = []; // A queue of players waiting to spawn.
-    $gameNetwork.tick = 0; // Used to track the current time
+    $gameNetwork.tick = 0; // Used to track the current time'
+    if ($gameNetwork["resync_timer"]) {
+        clearInterval($gameNetwork["resync_timer"])
+    }
+    // Realtime re-syncing of the scene
+    $gameNetwork.resync_timer = setInterval($gameNetwork.onResync, 500);
 
 
     // The game characters of all players in the session
@@ -888,6 +895,38 @@ $gameNetwork.onError = function (error) {
 };
 //#endregion
 
+
+//#region Common Handling
+$gameNetwork.handleMovementSync = function (data) {
+    const player_movement_sync = new BestWaifu.MZPeer.SyncPlayerMovement();
+    player_movement_sync.fromData(data);
+
+    // Ignore late ticks and let desync detection fix it later
+    if (player_movement_sync.getField("tick", -1) != -1 && player_movement_sync.getField("tick") < $gameNetwork.tick) return;
+
+    for (const remotePlayer of $remotePlayers) {
+        if (remotePlayer.username != player_movement_sync.getField("username")) continue;
+        remotePlayer.movementGraph.addNode(player_movement_sync);
+        remotePlayer.movementGraph.applyLatest();
+    }
+    if ($gameNetwork.side == BestWaifu.MZPeer.Sides.Host) {
+        $gameNetwork.sendToGuests(player_movement_sync);
+    }
+};
+
+$gameNetwork.handleOrientationSync = function(data) {
+    const player_orientation_sync = new BestWaifu.MZPeer.SyncPlayerOrientation();
+    player_orientation_sync.fromData(data);
+    // Ignore late teleports
+    if (player_orientation_sync.getField("tick", -1) != -1 && player_orientation_sync.getField("tick") < $gameNetwork.tick) return;
+    for (const remotePlayer of $remotePlayers) {
+        if (remotePlayer.username != player_orientation_sync.getField("username")) continue;
+        remotePlayer.locate(player_orientation_sync.getField("x", 0), player_orientation_sync.getField("y", 0));
+        remotePlayer.setDirection(player_orientation_sync.getField("direction", 2));
+    }
+};
+//#endregion
+
 //#region Host Handling
 $gameNetwork.onPeerConnection = function (dataConnection) {
     if (!$gameNetwork.open) {
@@ -946,23 +985,6 @@ $gameNetwork.onPeerDisconnection = function (peerConnection) {
     }
 };
 
-$gameNetwork.handleMovementSync = function (data) {
-    const player_movement_sync = new BestWaifu.MZPeer.SyncPlayerMovement();
-    player_movement_sync.fromData(data);
-
-    // Ignore late ticks and let desync detection fix it later
-    if (player_movement_sync.getField("tick", -1) != -1 && player_movement_sync.getField("tick") < $gameNetwork.tick) return;
-
-    for (const remotePlayer of $remotePlayers) {
-        if (remotePlayer.username != player_movement_sync.getField("username")) continue;
-        remotePlayer.movementGraph.addNode(player_movement_sync);
-        remotePlayer.movementGraph.applyLatest();
-    }
-    if ($gameNetwork.side == BestWaifu.MZPeer.Sides.Host) {
-        $gameNetwork.sendToGuests(player_movement_sync);
-    }
-};
-
 $gameNetwork.onPeerData = function (data) {
     if (typeof data !== "object") return;
     if (!data || !data.type || !data.username) return;
@@ -983,13 +1005,7 @@ $gameNetwork.onPeerData = function (data) {
             break;
 
         case "sync_player_orientation":
-            const player_orientation_sync = new BestWaifu.MZPeer.SyncPlayerOrientation();
-            player_orientation_sync.fromData(data);
-            for (const remotePlayer of $remotePlayers) {
-                if (remotePlayer.username != player_orientation_sync.getField("username")) continue;
-                remotePlayer.locate(player_orientation_sync.getField("x", 0), player_orientation_sync.getField("y", 0));
-                remotePlayer.setDirection(player_orientation_sync.getField("direction", 2));
-            }
+            $gameNetwork.handleOrientationSync(data);
             break;
 
         default:
@@ -1124,13 +1140,7 @@ $gameNetwork.onHostData = function (data) {
             break;
 
         case "sync_player_orientation":
-            const player_orientation_sync = new BestWaifu.MZPeer.SyncPlayerOrientation();
-            player_orientation_sync.fromData(data);
-            for (const remotePlayer of $remotePlayers) {
-                if (remotePlayer.username != player_orientation_sync.getField("username")) continue;
-                remotePlayer.locate(player_orientation_sync.getField("x", 0), player_orientation_sync.getField("y", 0));
-                remotePlayer.setDirection(player_orientation_sync.getField("direction", 2));
-            }
+            $gameNetwork.handleOrientationSync(data);
             break;
 
         case "request":
@@ -1866,6 +1876,13 @@ BestWaifu.MZPeer.Scene_NetplayWaiting.prototype.terminate = function () {
 
 //#region Network System Logic/hooks
 
+$gameNetwork.onResync = function() {
+    if (!window["$gameMap"]) return;
+    if (SceneManager._scene && SceneManager._scene instanceof Scene_Map && SceneManager._scene.isActive()) {
+        $gameMap.resyncRemotePlayers();
+    }
+};
+
 BestWaifu.MZPeer.Scene_Map_start = Scene_Map.prototype.start;
 Scene_Map.prototype.start = function () {
     BestWaifu.MZPeer.Scene_Map_start.call(this);
@@ -1884,7 +1901,10 @@ Scene_Map.prototype.start = function () {
         }
     }
 
-    // Orientation resync
+    $gameMap.resyncRemotePlayers();
+};
+
+Game_Map.prototype.resyncRemotePlayers = function() {
     if ($gameNetwork.side !== BestWaifu.MZPeer.Sides.Local) {
         const reorient_request = new BestWaifu.MZPeer.NetworkRequest(BestWaifu.MZPeer.NetworkRequest.Codes.REORIENT);
         $gameNetwork.sendData(reorient_request, BestWaifu.MZPeer.Sides.Common);
