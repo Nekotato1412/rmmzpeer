@@ -399,6 +399,18 @@ BestWaifu.MZPeer.NetworkGraph.prototype.initialize = function () {
     this._nodes = [];
 };
 
+/** Get a slice of the network graph as a new network graph. */
+BestWaifu.MZPeer.NetworkGraph.prototype.getSlice = function(size) {
+    const slice_network_graph = new BestWaifu.MZPeer.NetworkGraph();
+    if (this._nodes.length - size < 1) return slice_network_graph;
+    for (const node of this._nodes.slice(this._nodes.length - size)) {
+        slice_network_graph._nodes.push(node);
+        slice_network_graph.setField("tick", node.getField("tick", 0));
+    } 
+    return slice_network_graph;
+};
+
+/** Increment the graph's tick. */
 BestWaifu.MZPeer.NetworkGraph.prototype.tick = function () {
     this.setField("tick", $gameNetwork.tick + 1);
     $gameNetwork.tick = this.getField("tick");
@@ -1948,7 +1960,9 @@ Game_System.prototype.numberForUser = function (username) {
 //
 // Make the players visibly appear on screen and move around in real time
 
-// TODO: Check for desync occasionally and fix it via network graph merging
+// TODO: Check for desync 500ms and fix it via network graph merging
+// Only send a slice of the network graph according to the tick difference
+// to avoid needless packet size.
 
 BestWaifu.MZPeer.Scene_Map_updateMain = Scene_Map.prototype.updateMain;
 Scene_Map.prototype.updateMain = function () {
@@ -2072,13 +2086,6 @@ Game_Player.prototype.executeMove = function (dir) {
     $gameNetwork.sendData(move_sync_data, BestWaifu.MZPeer.Sides.Common);
 };
 
-// TODO: Sync event movements for guests
-BestWaifu.MZPeer.Game_Event_canMove = Game_Event.prototype.canMove;
-Game_Event.prototype.canMove = function () {
-    if ($gameNetwork.side == BestWaifu.MZPeer.Sides.Guest) return false;
-    return BestWaifu.MZPeer.Game_Event_canMove.call(this);
-};
-
 //#endregion
 
 //-----------------------------------------------------------------------------
@@ -2096,6 +2103,7 @@ Game_Event.prototype.canMove = function () {
 // should run according to what side the current player is on.
 
 // Events should only be moved by the host
+
 
 //#endregion
 
