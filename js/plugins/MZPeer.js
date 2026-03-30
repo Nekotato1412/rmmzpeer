@@ -414,11 +414,11 @@ BestWaifu.MZPeer.NetworkGraph.prototype.initialize = function () {
 /** Get a slice of the network graph as a new network graph. */
 BestWaifu.MZPeer.NetworkGraph.prototype.getSlice = function(size) {
     const slice_network_graph = new BestWaifu.MZPeer.NetworkGraph();
-    if (this._nodes.length - size <= 0) return slice_network_graph;
+    if (this._nodes.length - size < 0) return slice_network_graph;
     for (const node of this._nodes.slice(this._nodes.length - size)) {
         slice_network_graph._nodes.push(node);
-        slice_network_graph.setField("tick", node.getField("tick", 0));
-    } 
+    }
+    slice_network_graph.setField("tick", slice_network_graph.latestTick());
     return slice_network_graph;
 };
 
@@ -445,7 +445,7 @@ BestWaifu.MZPeer.NetworkGraph.prototype.applyLatest = function () {
         const tick = latest.getField("tick", 0);
         if (tick <= this.getField("tick", 0)) return;
         this.onApply(latest.networkData());
-        this.tick();
+        this.setField("tick", tick);
     }
 };
 
@@ -455,7 +455,7 @@ BestWaifu.MZPeer.NetworkGraph.prototype.apply = function () {
         const tick = node.getField("tick", 0);
         if (tick <= this.getField("tick", 0)) continue;
         this.onApply(node.networkData())
-        this.tick();
+        this.setField("tick", tick);
     }
 };
 
@@ -497,7 +497,7 @@ BestWaifu.MZPeer.NetworkGraph.prototype.onApply = function (data) { };
 
 /** Add a node to the graph timeline holding the given network data. */
 BestWaifu.MZPeer.NetworkGraph.prototype.addNode = function (network_data) {
-    const new_node = BestWaifu.MZPeer.NetworkGraphNode.create(network_data.getField("tick", this.getField("tick")), network_data);
+    const new_node = BestWaifu.MZPeer.NetworkGraphNode.create(network_data.getField("tick", this.getField("tick", 0)), network_data);
     this._nodes.push(new_node);
     
     // Decay exceptionally old ticks
@@ -508,6 +508,7 @@ BestWaifu.MZPeer.NetworkGraph.prototype.addNode = function (network_data) {
 
 /** Load an entire graph from history data. */
 BestWaifu.MZPeer.NetworkGraph.prototype.fromHistory = function (history) {
+    this.clear();
     for (const data of history) {
         const node = new BestWaifu.MZPeer.NetworkGraphNode();
         node.fromData(data);
