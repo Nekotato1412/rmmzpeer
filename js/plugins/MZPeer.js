@@ -64,17 +64,21 @@ BestWaifu.MZPeer.lobbyIdCharacters = [
     'L', 'M', 'N', 'O', 'P'
 ]
 
+BestWaifu.MZPeer.logDebug = function(message) {
+    console.log("[DEBUG] ", message);
+};
+
 BestWaifu.MZPeer.lobbyIdLength = 10;
 
 // Hard coded to work like Local Coop for now.
 BestWaifu.MZPeer.maxPlayers = 4;
 
 //-----------------------------------------------------------------------------
-// #region Network API
+// #region Network Objects
 //
 // Helper objects to interface with the network system.
 
-// Generic class for building data to send over the network
+//#region Generic class for building data to send over the network
 BestWaifu.MZPeer.NetworkData = function () {
     this.initialize(...arguments);
 };
@@ -127,7 +131,7 @@ BestWaifu.MZPeer.NetworkData.prototype.field = function (type, key) {
  * @param {String} key 
  */
 BestWaifu.MZPeer.NetworkData.prototype.addField = function (dataType, key) {
-    if (this._data[key]) throw new Error("Attempted to add a field that exists.");
+    if (this._data[key] !== undefined) throw new Error("Attempted to add a field that exists.");
     if (dataType < 0 || dataType > 4) {
         throw new Error("Attempted to add a field type that does not exist.");
     }
@@ -212,8 +216,9 @@ BestWaifu.MZPeer.NetworkData.prototype.fromData = function (data) {
     return this;
 };
 
+//#endregion
 
-// NetworkDataSubTypes
+//#region Network Request
 
 /**
  * Data to send to the host to invoke a response
@@ -233,9 +238,12 @@ BestWaifu.MZPeer.NetworkRequest.prototype.constructor = BestWaifu.MZPeer.Network
 BestWaifu.MZPeer.NetworkRequest.Codes = {
     "INIT": 0, // Let the host know we're ready to recieve setup data
     "DISCONNECT": 1, // Used for a graceful disconnection,
-    "POST_SAVE_LOAD": 2, // Take us to the next init step
-    "INITIALIZE_PLAYERS": 3, // Let the host know we need to initialize players,
-    "REORIENT": 4 // Let the host/guests know we need to collect new postions
+    "POST_SAVE_LOAD": 2,
+    "POST_PLAYER_LIST": 3,
+    "POST_PREGAME_LOBBY": 4,
+    "INITIALIZE_PLAYERS": 5, // Let the host know we need to initialize players,
+    "REORIENT": 6, // Let the host/guests know we need to collect new positions
+    "GOTO_MAP": 7
 };
 
 BestWaifu.MZPeer.NetworkRequest.prototype.initialize = function (code = -1) {
@@ -243,6 +251,10 @@ BestWaifu.MZPeer.NetworkRequest.prototype.initialize = function (code = -1) {
     this.addField(BestWaifu.MZPeer.NetworkData.DataTypes.INT, "code");
     this.setField("code", code);
 };
+
+//#endregion
+
+//#region Network Response
 
 /**
  * Data sent to a guest to communicate
@@ -259,7 +271,8 @@ BestWaifu.MZPeer.NetworkResponse.prototype.constructor = BestWaifu.MZPeer.Networ
 // Sent from Host -> Guest for one-off commands or state changes
 BestWaifu.MZPeer.NetworkResponse.Codes = {
     "RESET": 0,       // Guest should reset their state because host reset the game state
-    "DISCONNECT": 1   // Host instructs guest to disconnect gracefully (kicked)
+    "DISCONNECT": 1,   // Host instructs guest to disconnect gracefully (kicked)
+    "PREGAME": 2, // Host instructs guest to go to the pre-game lobby scene
 };
 
 BestWaifu.MZPeer.NetworkResponse.prototype.initialize = function (code = -1) {
@@ -268,6 +281,9 @@ BestWaifu.MZPeer.NetworkResponse.prototype.initialize = function (code = -1) {
     this.setField("code", code);
 };
 
+//#endregion
+
+//#region Syncing Data
 
 BestWaifu.MZPeer.SyncSaveData = function () {
     this.initialize(...arguments);
@@ -347,6 +363,9 @@ BestWaifu.MZPeer.SyncPlayerOrientation.prototype.initialize = function () {
     this.addField(BestWaifu.MZPeer.NetworkData.DataTypes.INT, "y");
 };
 
+//#endregion
+
+//#region Network Graph
 
 /** Stores network data inside of itself and the time it was created in the form of ticks. */
 BestWaifu.MZPeer.NetworkGraphNode = function () {
@@ -402,7 +421,7 @@ BestWaifu.MZPeer.NetworkGraph.prototype.initialize = function () {
 /** Get a slice of the network graph as a new network graph. */
 BestWaifu.MZPeer.NetworkGraph.prototype.getSlice = function(size) {
     const slice_network_graph = new BestWaifu.MZPeer.NetworkGraph();
-    if (this._nodes.length - size < 1) return slice_network_graph;
+    if (this._nodes.length - size <= 0) return slice_network_graph;
     for (const node of this._nodes.slice(this._nodes.length - size)) {
         slice_network_graph._nodes.push(node);
         slice_network_graph.setField("tick", node.getField("tick", 0));
@@ -412,7 +431,7 @@ BestWaifu.MZPeer.NetworkGraph.prototype.getSlice = function(size) {
 
 /** Increment the graph's tick. */
 BestWaifu.MZPeer.NetworkGraph.prototype.tick = function () {
-    this.setField("tick", $gameNetwork.tick + 1);
+    this.setField("tick", this.getField("tick", 0) + 1);
     $gameNetwork.tick = this.getField("tick");
 };
 
@@ -443,7 +462,6 @@ BestWaifu.MZPeer.NetworkGraph.prototype.latestTick = function () {
 BestWaifu.MZPeer.NetworkGraph.prototype.applyLatest = function () {
     const latest = this.latestNode();
     if (latest) {
-        if (latest.getField("tick") < $gameNetwork.tick) return;
         latest.apply();
     }
 };
@@ -453,8 +471,6 @@ BestWaifu.MZPeer.NetworkGraph.SyncStatuses = {
     "NETWORK_SYNCED": 1,
     "NETWORK_AHEAD": 2
 };
-
-// TODO: Limit the size of the graph to 256 items to avoid memory leaks
 
 /** Used to quickly identify and fix types of desync. */
 BestWaifu.MZPeer.NetworkGraph.prototype.syncStatus = function () {
@@ -475,10 +491,13 @@ BestWaifu.MZPeer.NetworkGraph.prototype.clear = function () {
 
 /** Merge in another graph with ours without ticking. Used for hard resync purposes. */
 BestWaifu.MZPeer.NetworkGraph.prototype.merge = function (other_graph) {
-    for (let i = 0; i < other_graph._nodes.length; i++) {
-        if (this._nodes[i]) continue;
-        this._nodes[i] = JsonEx.makeDeepCopy(other_graph._nodes[i]);
+    const existingTicks = new Set(this._nodes.map(n => n.getField("tick", 0)));
+    for (const node of other_graph._nodes) {
+        if (!existingTicks.has(node.getField("tick", 0))) {
+            this._nodes.push(JsonEx.makeDeepCopy(node));
+        }
     }
+    this._nodes.sort((a, b) => a.getField("tick", 0) - b.getField("tick", 0));
 };
 
 /** To be overriden with a function to call when a node is applied. */
@@ -487,9 +506,12 @@ BestWaifu.MZPeer.NetworkGraph.prototype.onApply = function (data) { };
 /** Add a node to the graph timeline holding the given network data with the given callback function. */
 BestWaifu.MZPeer.NetworkGraph.prototype.addNode = function (network_data) {
     this.tick();
-    const new_node = new BestWaifu.MZPeer.NetworkGraphNode.create(this.getField("tick"), network_data);
+    const new_node = BestWaifu.MZPeer.NetworkGraphNode.create(this.getField("tick"), network_data);
     new_node.handleApply = this.onApply;
     this._nodes.push(new_node);
+    if (this._nodes.length > 256) {
+        this._nodes.shift();
+    }
 };
 
 /** Load an entire graph from history data. */
@@ -497,6 +519,7 @@ BestWaifu.MZPeer.NetworkGraph.prototype.fromHistory = function (history) {
     for (const data of history) {
         const node = new BestWaifu.MZPeer.NetworkGraphNode();
         node.fromData(data);
+        node.handleApply = this.onApply;
         this._nodes.push(node);
     }
 };
@@ -511,7 +534,131 @@ BestWaifu.MZPeer.NetworkGraph.prototype.data = function () {
     return BestWaifu.MZPeer.NetworkData.prototype.data.call(this);
 };
 
+//#endregion
 
+//#region Network Router
+BestWaifu.MZPeer.NetworkRouter = function() {
+    this.initialize(...arguments);
+}
+
+BestWaifu.MZPeer.NetworkRouter.prototype.constructor = BestWaifu.MZPeer.NetworkRouter;
+BestWaifu.MZPeer.NetworkRouter.prototype.initialize = function() {
+    this._dataListeners = [];
+};
+
+/** Data recieved from a guest. */
+BestWaifu.MZPeer.NetworkRouter.prototype.onPeerData = function (data) {
+    if (typeof data !== "object") return;
+    if (!data || !data["type"] || !data["username"]) return;
+    BestWaifu.MZPeer.logDebug("Locating listeners for type  " + data.type);
+    for (const dataListener of this._dataListeners) {
+        if (dataListener.side !== BestWaifu.MZPeer.Sides.Common && dataListener.side !== BestWaifu.MZPeer.Sides.Host) continue;
+        BestWaifu.MZPeer.logDebug("=> " + dataListener.type)
+        if (dataListener.type === data.type) {
+            BestWaifu.MZPeer.logDebug("+ Found listener for type: " + dataListener.type)
+            dataListener.callback(data);
+            return;
+        }
+    }
+    console.warn("[HOST] Unknown data type recieved: " + data.type);
+};
+
+/** Data recieved from the host. */
+BestWaifu.MZPeer.NetworkRouter.prototype.onHostData = function(data) {
+    if (typeof data !== "object") return;
+    if (!data || !data["type"] || !data["username"]) return;
+    BestWaifu.MZPeer.logDebug("Locating listeners for type  " + data.type);
+    for (const dataListener of this._dataListeners) {
+        if (dataListener.side !== BestWaifu.MZPeer.Sides.Common && dataListener.side !== BestWaifu.MZPeer.Sides.Guest) continue;
+        BestWaifu.MZPeer.logDebug("=> " + dataListener.type)
+        if (dataListener.type === data.type) {
+            BestWaifu.MZPeer.logDebug("+ Found listener for type: " + dataListener.type)
+            dataListener.callback(data);
+            return;
+        }
+    }
+    console.warn("[GUEST] Unknown data type recieved: " + data.type);
+};
+
+/**
+ * Register a listener to recieve the given data type on the specified side.
+ * @param {string} network_data_type
+ * @param {int} listening_side
+ * @param {function} listener 
+ */
+BestWaifu.MZPeer.NetworkRouter.prototype.addNetworkDataListener = function(network_data_type, listening_side, listener) {
+    if (!listener) throw new Error("Cannot assign an empty listener.");
+    this._dataListeners.push({ "type": network_data_type, "callback": listener, "side": listening_side });
+};
+
+BestWaifu.MZPeer.NetworkRouter.prototype.sendToGuest = function(username, networkData) {
+    if ($gameNetwork.side !== BestWaifu.MZPeer.Sides.Host) {
+        throw new Error("Only host can send data to guests.")
+    }
+    const payload = networkData.data();
+    for (const dataConnection of $gameNetwork.peerConnections) {
+        if (!dataConnection.open) continue;
+        if (dataConnection.metadata?.username === username) {
+            try {
+                dataConnection.send(payload);
+            } catch(e) {
+                console.error("Failed to send to guest:", e);
+            }
+            break;
+        }
+    }
+};
+
+BestWaifu.MZPeer.NetworkRouter.prototype.sendToGuests = function(network_data) {
+    if ($gameNetwork.side !== BestWaifu.MZPeer.Sides.Host) {
+        throw new Error("Only host can send data to guests.")
+    }
+    const payload = network_data.data();
+    for (const dataConnection of $gameNetwork.peerConnections) {
+        if (!dataConnection.open) continue;
+        try {
+            dataConnection.send(payload);
+        } catch (e) {
+            console.error("Failed to send to guest:", e);
+        }
+    }
+};
+
+BestWaifu.MZPeer.NetworkRouter.prototype.sendData = function (network_data, target_side) {
+    // Send to all guests if we're host
+    if (target_side === BestWaifu.MZPeer.Sides.Guest) {
+        if ($gameNetwork.side !== BestWaifu.MZPeer.Sides.Host) return;
+        this.sendToGuests(network_data);
+    }
+
+    // Send to host if we're guest
+    if (target_side === BestWaifu.MZPeer.Sides.Host) {
+        if ($gameNetwork.side !== BestWaifu.MZPeer.Sides.Guest) return;
+        if ($gameNetwork.hostConnection) {
+            $gameNetwork.hostConnection.send(network_data.data());
+        }
+    }
+
+    // Send to either
+    if (target_side === BestWaifu.MZPeer.Sides.Common) {
+        // all guests
+        if ($gameNetwork.side === BestWaifu.MZPeer.Sides.Host) {
+            this.sendToGuests(network_data);
+        }
+
+        // host
+        if ($gameNetwork.side === BestWaifu.MZPeer.Sides.Guest) {
+            if ($gameNetwork.hostConnection) {
+                $gameNetwork.hostConnection.send(network_data.data());
+            }
+        }
+    }
+};
+
+//#endregion
+
+
+//#endregion
 
 BestWaifu.MZPeer.Sides = {
     Common: 0, // Everyone
@@ -534,12 +681,14 @@ $gameNetwork.reset = function () {
     $gameNetwork.lobbyId = ""; // The current Lobby ID
     $gameNetwork.hostPeerId = ""; //  The peer ID of the host.
     $gameNetwork.side = BestWaifu.MZPeer.Sides.Local; // Our side
-    $gameNetwork.playerList = []; // A list of connected players by username. Not ordered.
+    $gameNetwork.playerList = []; // A list of NetworkPlayers
     $gameNetwork.spawnablePlayers = []; // A queue of players waiting to spawn.
     $gameNetwork.tick = 0; // Used to track the current time'
+
     if ($gameNetwork["resync_timer"]) {
         clearInterval($gameNetwork["resync_timer"])
     }
+
     // Realtime re-syncing of the scene
     $gameNetwork.resync_timer = setInterval($gameNetwork.onResync, 500);
 
@@ -556,6 +705,9 @@ $gameNetwork.reset = function () {
 
     $gameNetwork.peerConnections = []; // For juggling data connections and handling authorization as host
     $gameNetwork.hostConnection = null; // For letting the host know things as guest
+
+    // For routing data
+    $gameNetwork.router = new BestWaifu.MZPeer.NetworkRouter();
 };
 
 Object.defineProperty(window, "$allPlayers", {
@@ -567,165 +719,27 @@ Object.defineProperty(window, "$allPlayers", {
 // Technically for initializing but I'm not a pedant and it makes sense in later usages
 $gameNetwork.reset();
 
+//#region Network Helpers
 
-BestWaifu.MZPeer.Game_Character_initMembers = Game_Character.prototype.initMembers;
-Game_Character.prototype.initMembers = function () {
-    this.movementGraph = new BestWaifu.MZPeer.NetworkGraph(); // Used to track movement history
-    this.movementGraph.onApply = this.onMovementApply.bind(this);
-    this._remoteMoveQueue = [];
-    BestWaifu.MZPeer.Game_Character_initMembers.call(this);
+/**
+ * Do we have guest connections?
+ * @returns bool
+ */
+$gameNetwork.hasGuestConnections = function() {
+    return $gameNetwork.peerConnections.length > 0;
 };
 
-Game_Character.prototype.onMovementApply = function (data) {
-    if (!data["type"]) return;
-    switch (data.type) {
-        case "sync_player_movement":
-            const move_sync_data = new BestWaifu.MZPeer.SyncPlayerMovement();
-            move_sync_data.fromData(data);
-            this._remoteMoveQueue.push(move_sync_data);
-            break;
-        case "sync_player_orientation":
-            const orientation_sync_data = new BestWaifu.MZPeer.SyncPlayerOrientation();
-            orientation_sync_data.fromData(data);
-            this.locate(orientation_sync_data.getField("x", this.x), orientation_sync_data.getField("y", this.y));
-            this.setDirection(orientation_sync_data.getField("direction", this.direction()));
-            break;
+$gameNetwork.disconnectSession = function() {
+    if (this.side === BestWaifu.MZPeer.Sides.Host) {
+        this.sendData(
+            new BestWaifu.MZPeer.NetworkResponse(BestWaifu.MZPeer.NetworkResponse.Codes.DISCONNECT),
+            BestWaifu.MZPeer.Sides.Guest);
+        this.destroySession();
     }
-};
-
-BestWaifu.MZPeer.Game_Character_update = Game_Character.prototype.update;
-Game_Character.prototype.update = function () {
-    this.moveByNetwork();
-    BestWaifu.MZPeer.Game_Character_update.call(this);
-};
-
-BestWaifu.MZPeer.Game_Character_locate = Game_Character.prototype.locate;
-Game_Character.prototype.locate = function (x, y) {
-    this._remoteMoveQueue = []; // Clear move queue to avoid going out of sync
-    // Log the relocation in the movement graph
-    const player_orientation_sync = new BestWaifu.MZPeer.SyncPlayerOrientation();
-    player_orientation_sync.setField("x", x);
-    player_orientation_sync.setField("y", y);
-    player_orientation_sync.setField("direction", this.direction());
-    this.movementGraph.addNode(player_orientation_sync);
-    BestWaifu.MZPeer.Game_Character_locate.call(this, x, y);
-}
-
-Game_Character.prototype.moveByNetwork = function () {
-    if (!this._remoteMoveQueue.length) return;
-    if (!this.isMoving()) {
-        const move_sync_data = this._remoteMoveQueue.pop();
-        this.setMoveSpeed(move_sync_data.getField("speed", this.moveSpeed()));
-        this.moveStraight(move_sync_data.getField("direction"));
+    if (this.side === BestWaifu.MZPeer.Sides.Guest) {
+        this.sendRequest(new BestWaifu.MZPeer.NetworkRequest(BestWaifu.MZPeer.NetworkRequest.Codes.DISCONNECT));
+        this.destroySession();
     }
-};
-
-BestWaifu.MZPeer.Remote_Player = function () {
-    this.initialize(...arguments);
-}
-BestWaifu.MZPeer.Remote_Player.prototype = Object.create(Game_Character.prototype);
-BestWaifu.MZPeer.Remote_Player.prototype.constructor = BestWaifu.MZPeer.Remote_Player;
-
-BestWaifu.MZPeer.Remote_Player.prototype.initialize = function (username) {
-    this.username = username; // Used to identify remote players
-    Game_Character.prototype.initialize.call(this);
-};
-
-BestWaifu.MZPeer.Remote_Player.prototype.actor = function () {
-    const N = $gameSystem.numberForUser(this.username) - 1;
-    if (N < 0) return null;
-    return $gameParty.members()[N] || null;
-};
-
-BestWaifu.MZPeer.Remote_Player.prototype.refresh = function () {
-    const actor = this.actor();
-    const characterName = actor ? actor.characterName() : "";
-    const characterIndex = actor ? actor.characterIndex() : 0;
-    this.setImage(characterName, characterIndex);
-};
-
-// #endregion
-
-//-----------------------------------------------------------------------------
-// #region Plugin Commands
-//
-// Provide plugin commands for:
-// - Spawning the last pending player at a given position
-// #endregion
-
-
-//-----------------------------------------------------------------------------
-// #region Script Calls
-//
-// Provide script calls for:
-// - Redefining what "Player" refers to in a move route
-
-
-
-
-//#endregion
-
-
-//-----------------------------------------------------------------------------
-// #region Lobbies/PeerJS
-//
-// Hosting, joining, and leaving lobbies. 
-// * The player that created the lobby is designated host.
-// * Host save data is the data that is loaded and synced.
-
-$gameNetwork.makeLobbyId = function () {
-    let id = "";
-    for (let i = 0; i < BestWaifu.MZPeer.lobbyIdLength; i++) {
-        id += BestWaifu.MZPeer.lobbyIdCharacters[Math.randomInt(BestWaifu.MZPeer.lobbyIdCharacters.length - 1)];
-    }
-    return id;
-};
-
-// Use the provided base + the lobby ID to make a reconstructable but compact ID
-// that shouldn't clash with the server's IDs.
-$gameNetwork.makePeerId = function (lobby_id) {
-    return BestWaifu.MZPeer.peerIdBase + lobby_id.toLowerCase();
-};
-
-$gameNetwork.createHostSession = function () {
-    if (!$gameNetwork.username) return;
-    if ($gameNetwork.offlineMode) return;
-    // We make an ID of our own here for user friendliness
-    $gameNetwork.lobbyId = $gameNetwork.makeLobbyId();
-    const peer = new Peer($gameNetwork.makePeerId($gameNetwork.lobbyId));
-    $gameNetwork.open = true;
-
-    peer.on('open', function (id) {
-        console.log(`Successfully opened session with id ${id}`);
-    });
-
-    peer.on('connection', $gameNetwork.onPeerConnection);
-    peer.on('error', $gameNetwork.onError);
-
-    $gameNetwork.peer = peer;
-    $gameNetwork.side = BestWaifu.MZPeer.Sides.Host;
-
-    return peer;
-};
-
-$gameNetwork.createGuestSession = function () {
-    if (!$gameNetwork.username) return;
-    if ($gameNetwork.offlineMode) return;
-    // We don't generate an ID here because we only need the host's id to be
-    // user friendly. The peer server will automatically generate the ID.
-    const peer = new Peer();
-    $gameNetwork.open = false;
-
-    peer.on('open', function (id) {
-        console.log(`Successfully connected to traversal server with id ${id}`);
-    });
-
-    peer.on('connection', $gameNetwork.onPeerConnection);
-    peer.on('error', $gameNetwork.onError);
-
-    $gameNetwork.peer = peer;
-    $gameNetwork.side = BestWaifu.MZPeer.Sides.Guest;
-    return peer;
 };
 
 /**
@@ -733,10 +747,7 @@ $gameNetwork.createGuestSession = function () {
  * @param {BestWaifu.MZPeer.NetworkData} network_data 
  */
 $gameNetwork.sendToGuests = function (network_data) {
-    // Forward to all peers
-    for (const dataConnection of $gameNetwork.peerConnections) {
-        dataConnection.send(network_data.data());
-    }
+    this.router.sendToGuests(network_data);
 };
 
 /**
@@ -746,33 +757,7 @@ $gameNetwork.sendToGuests = function (network_data) {
  * @returns 
  */
 $gameNetwork.sendData = function (network_data, side) {
-
-    // Send to all guests if we're host
-    if (side === BestWaifu.MZPeer.Sides.Guest) {
-        if ($gameNetwork.side !== BestWaifu.MZPeer.Sides.Host) return;
-        $gameNetwork.sendToGuests(network_data);
-    }
-
-    // Send to host if we're guest
-    if (side === BestWaifu.MZPeer.Sides.Host) {
-        if ($gameNetwork.side !== BestWaifu.MZPeer.Sides.Guest) return;
-        if ($gameNetwork.hostConnection) {
-            $gameNetwork.hostConnection.send(network_data.data());
-        }
-    }
-
-    // Send to either
-    if (side === BestWaifu.MZPeer.Sides.Common) {
-        // all guests
-        if ($gameNetwork.side === BestWaifu.MZPeer.Sides.Host) {
-            $gameNetwork.sendToGuests(network_data);
-        }
-
-        // host
-        if ($gameNetwork.side === BestWaifu.MZPeer.Sides.Guest) {
-            $gameNetwork.hostConnection.send(network_data.data());
-        }
-    }
+    this.router.sendData(network_data, side);
 };
 
 /**
@@ -788,12 +773,7 @@ $gameNetwork.sendRequest = function (networkRequest) {
  * @param {BestWaifu.MZPeer.NetworkData} networkData 
  */
 $gameNetwork.sendResponse = function (username, networkData) {
-    if ($gameNetwork.side !== BestWaifu.MZPeer.Sides.Host) return; // Only host can send responses
-    for (const peer of $gameNetwork.peerConnections) {
-        if (peer.metadata?.username === username) {
-            peer.send(networkData.data());
-        }
-    }
+    this.router.sendToGuest(username, networkData);
 };
 
 $gameNetwork.showJoinLobby = function () {
@@ -833,7 +813,9 @@ $gameNetwork.pushError = function (message) {
     $gameNetwork.errorQueue.push(message);
 };
 
-//#region General Connection Handling
+//#endregion
+
+//#region Connection Handlers
 
 $gameNetwork.onHostConnectionError = function (error) {
     $gameNetwork.destroySession();
@@ -856,7 +838,7 @@ $gameNetwork.onHostDisconnected = function () {
     $gameNetwork.destroySession();
     SceneManager._scene.fadeOutAll();
     SceneManager.goto(Scene_Title);
-    $gameNetwork.pushError("Disconnected by host.");
+    $gameNetwork.pushError("Disconnected from session.");
 };
 
 $gameNetwork.onError = function (error) {
@@ -893,41 +875,7 @@ $gameNetwork.onError = function (error) {
     }
     $gameNetwork.pushError(message + "\n" + error.message);
 };
-//#endregion
 
-
-//#region Common Handling
-$gameNetwork.handleMovementSync = function (data) {
-    const player_movement_sync = new BestWaifu.MZPeer.SyncPlayerMovement();
-    player_movement_sync.fromData(data);
-
-    // Ignore late ticks and let desync detection fix it later
-    if (player_movement_sync.getField("tick", -1) != -1 && player_movement_sync.getField("tick") < $gameNetwork.tick) return;
-
-    for (const remotePlayer of $remotePlayers) {
-        if (remotePlayer.username != player_movement_sync.getField("username")) continue;
-        remotePlayer.movementGraph.addNode(player_movement_sync);
-        remotePlayer.movementGraph.applyLatest();
-    }
-    if ($gameNetwork.side == BestWaifu.MZPeer.Sides.Host) {
-        $gameNetwork.sendToGuests(player_movement_sync);
-    }
-};
-
-$gameNetwork.handleOrientationSync = function(data) {
-    const player_orientation_sync = new BestWaifu.MZPeer.SyncPlayerOrientation();
-    player_orientation_sync.fromData(data);
-    // Ignore late teleports
-    if (player_orientation_sync.getField("tick", -1) != -1 && player_orientation_sync.getField("tick") < $gameNetwork.tick) return;
-    for (const remotePlayer of $remotePlayers) {
-        if (remotePlayer.username != player_orientation_sync.getField("username")) continue;
-        remotePlayer.locate(player_orientation_sync.getField("x", 0), player_orientation_sync.getField("y", 0));
-        remotePlayer.setDirection(player_orientation_sync.getField("direction", 2));
-    }
-};
-//#endregion
-
-//#region Host Handling
 $gameNetwork.onPeerConnection = function (dataConnection) {
     if (!$gameNetwork.open) {
         console.log("Rejecting connection from remote peer. Not accepting new connections.");
@@ -965,12 +913,11 @@ $gameNetwork.onPeerConnection = function (dataConnection) {
 
     console.log(`${username} connected.`);
     $gameNetwork.peerConnections.push(dataConnection);
-    dataConnection.on('data', $gameNetwork.onPeerData);
+    dataConnection.on('data', $gameNetwork.router.onPeerData.bind($gameNetwork.router));
     dataConnection.on('close', $gameNetwork.onPeerDisconnection.bind(this, dataConnection));
 };
 
 $gameNetwork.onPeerDisconnection = function (peerConnection) {
-
     console.log(`${peerConnection.metadata?.username} disconnected.`);
     $gameNetwork.peerConnections = $gameNetwork.peerConnections.filter(c => c.open);
 
@@ -985,36 +932,13 @@ $gameNetwork.onPeerDisconnection = function (peerConnection) {
     }
 };
 
-$gameNetwork.onPeerData = function (data) {
-    if (typeof data !== "object") return;
-    if (!data || !data.type || !data.username) return;
+//#endregion
 
-    switch (data.type) {
-        case "request":
-            const request = new BestWaifu.MZPeer.NetworkRequest();
-            request.fromData(data);
-            $gameNetwork.handleRequest(request);
-            break;
+//#region Host Data Listeners
 
-        case "response":
-            console.warn("Received unexpected response from peer:", data);
-            break;
-
-        case "sync_player_movement":
-            $gameNetwork.handleMovementSync(data);
-            break;
-
-        case "sync_player_orientation":
-            $gameNetwork.handleOrientationSync(data);
-            break;
-
-        default:
-            console.warn("Unknown data type:", data.type);
-            break;
-    }
-};
-
-$gameNetwork.handleRequest = function (request) {
+$gameNetwork.router.addNetworkDataListener("request", BestWaifu.MZPeer.Sides.Host, data => {
+    const request = new BestWaifu.MZPeer.NetworkRequest();
+    request.fromData(data);
     switch (request.getField("code")) {
 
         case BestWaifu.MZPeer.NetworkRequest.Codes.DISCONNECT:
@@ -1038,17 +962,17 @@ $gameNetwork.handleRequest = function (request) {
             const player_list_data = new BestWaifu.MZPeer.SyncPlayerList();
             player_list_data.setField("list", $gameNetwork.playerList);
             $gameNetwork.sendResponse(request.username(), player_list_data);
-
+            break;
+        
+        case BestWaifu.MZPeer.NetworkRequest.Codes.POST_PREGAME_LOBBY:
             // Designate the player as spawnable/creatable
             $gameNetwork.spawnablePlayers.push(request.username());
-
-            if (BestWaifu.MZPeer.PlayerJoinVar > 0) {
-                $gameVariables.setValue(BestWaifu.MZPeer.PlayerJoinVar, $gameSystem.numberForUser(request.username()));
-            }
-
-            if (BestWaifu.MZPeer.PlayerJoinCE > 0) {
-                $gameTemp.reserveCommonEvent(BestWaifu.MZPeer.PlayerJoinCE);
-            }
+            console.log(`${request.username()} joined the lobby.`);
+            break;
+        
+        case BestWaifu.MZPeer.NetworkRequest.Codes.POST_PLAYER_LIST:
+            const pregame_lobby_response = new BestWaifu.MZPeer.NetworkResponse(BestWaifu.MZPeer.NetworkResponse.Codes.PREGAME);
+            $gameNetwork.sendResponse(request.username(), pregame_lobby_response);
             break;
 
         case BestWaifu.MZPeer.NetworkRequest.Codes.INITIALIZE_PLAYERS:
@@ -1088,85 +1012,15 @@ $gameNetwork.handleRequest = function (request) {
             console.warn("Unhandled request code:", request.getField("code"));
             break;
     }
-};
+});
 
 //#endregion
 
+//#region Guest Data Listeners
 
-//#region Guest Handling
-$gameNetwork.onHostData = function (data) {
-    if (typeof data !== "object") return;
-    if (!data || !data.type) return;
-
-    switch (data.type) {
-        case "response":
-            const response = new BestWaifu.MZPeer.NetworkResponse();
-            response.fromData(data);
-            $gameNetwork.handleResponse(response);
-            break;
-
-        case "sync_save_data":
-            const save_data_sync = new BestWaifu.MZPeer.SyncSaveData();
-            save_data_sync.fromData(data);
-            save_data_sync.loadSave();
-            console.log("Successfully loaded save.")
-            break;
-
-        case "sync_player_list":
-            const player_list_sync = new BestWaifu.MZPeer.SyncPlayerList();
-            player_list_sync.fromData(data);
-            $gameNetwork.playerList = player_list_sync.getField("list", [$gameNetwork.username]);
-            console.log("Successfully loaded player list.");
-            break;
-
-        case "sync_player_creation":
-            const player_creation_sync = new BestWaifu.MZPeer.SyncPlayerCreation();
-            player_creation_sync.fromData(data);
-            if (player_creation_sync.getField("username") == $gameNetwork.username) {
-                $gameNetwork.tick = player_creation_sync.getField("tick", 0);
-                SceneManager.goto(Scene_Map);
-            } else {
-                $gameNetwork.createRemotePlayer(
-                    player_creation_sync.getField("username"),
-                    player_creation_sync.getField("x"),
-                    player_creation_sync.getField("y")
-                );
-            }
-            console.log(`Successfully synced ${$allPlayers.length - 1} players.`)
-            break;
-
-        case "sync_player_movement":
-            $gameNetwork.handleMovementSync(data);
-            break;
-
-        case "sync_player_orientation":
-            $gameNetwork.handleOrientationSync(data);
-            break;
-
-        case "request":
-            const request = new BestWaifu.MZPeer.NetworkRequest();
-            request.fromData(data);
-            switch (request.getField("code", -1)) {
-                case BestWaifu.MZPeer.NetworkRequest.Codes.REORIENT:
-                    const orientation_sync = new BestWaifu.MZPeer.SyncPlayerOrientation();
-                    orientation_sync.setField("x", $gamePlayer.x);
-                    orientation_sync.setField("y", $gamePlayer.y);
-                    orientation_sync.setField("direction", $gamePlayer.direction());
-                    $gameNetwork.sendData(orientation_sync, BestWaifu.MZPeer.Sides.Host);
-                    break;
-                default:
-                    console.warn(`Unhandled request from host: ${request.getField("code", -1)}`);
-                    break;
-            }
-            break;
-
-        default:
-            console.warn("Unknown host data type:", data.type);
-            break;
-    }
-};
-
-$gameNetwork.handleResponse = function (response) {
+$gameNetwork.router.addNetworkDataListener("response", BestWaifu.MZPeer.Sides.Guest, data => {
+    const response = new BestWaifu.MZPeer.NetworkResponse();
+    response.fromData(data);
     console.log(`Recieved response from ${response.username()}`)
     switch (response.getField("code")) {
         case BestWaifu.MZPeer.NetworkResponse.Codes.DISCONNECT:
@@ -1178,18 +1032,200 @@ $gameNetwork.handleResponse = function (response) {
             console.log("Reset signal recieved.");
             this.fadeOutAll();
             SceneManager.goto(BestWaifu.MZPeer.Scene_NetplayWaiting);
-            const req = new BestWaifu.MZPeer.NetworkRequest(BestWaifu.MZPeer.NetworkRequest.Codes.INIT);
-            $gameNetwork.sendRequest(req);
+            $gameNetwork.sendRequest(new BestWaifu.MZPeer.NetworkRequest(BestWaifu.MZPeer.NetworkRequest.Codes.INIT));
             break;
+        
+        case BestWaifu.MZPeer.NetworkResponse.Codes.PREGAME:
+            console.log("Entering pregame lobby.");
+            this.fadeOutAll();
+            SceneManager.goto(BestWaifu.MZPeer.Scene_PreGameLobby);
+            $gameNetwork.sendRequest(new BestWaifu.MZPeer.NetworkRequest(BestWaifu.MZPeer.NetworkRequest.Codes.POST_PREGAME_LOBBY));
 
         default:
             console.warn(`Unhandled host response code: ${response.getField("code")}`);
             break;
     }
-};
+});
+
+$gameNetwork.router.addNetworkDataListener("sync_save_data", BestWaifu.MZPeer.Sides.Guest, data => {
+    const save_data_sync = new BestWaifu.MZPeer.SyncSaveData();
+    save_data_sync.fromData(data);
+    save_data_sync.loadSave();
+    console.log("Successfully loaded save.")
+});
+
+$gameNetwork.router.addNetworkDataListener("sync_player_list", BestWaifu.MZPeer.Sides.Guest, data => {
+    const player_list_sync = new BestWaifu.MZPeer.SyncPlayerList();
+    player_list_sync.fromData(data);
+    $gameNetwork.playerList = player_list_sync.getField("list", [$gameNetwork.username]);
+    console.log("Successfully loaded player list.");
+});
+
+$gameNetwork.router.addNetworkDataListener("sync_player_creation", BestWaifu.MZPeer.Sides.Guest, data => {
+    const player_creation_sync = new BestWaifu.MZPeer.SyncPlayerCreation();
+    player_creation_sync.fromData(data);
+    if (player_creation_sync.getField("username") == $gameNetwork.username) {
+        $gameNetwork.tick = player_creation_sync.getField("tick", 0);
+        SceneManager.goto(Scene_Map);
+    } else {
+        $gameNetwork.createRemotePlayer(
+            player_creation_sync.getField("username"),
+            player_creation_sync.getField("x"),
+            player_creation_sync.getField("y")
+        );
+    }
+    console.log(`Successfully synced ${$allPlayers.length - 1} players.`)
+});
+
+$gameNetwork.router.addNetworkDataListener("request", BestWaifu.MZPeer.Sides.Guest, data => {
+    const request = new BestWaifu.MZPeer.NetworkRequest();
+    request.fromData(data);
+    switch (request.getField("code", -1)) {
+        case BestWaifu.MZPeer.NetworkRequest.Codes.REORIENT:
+            const orientation_sync = new BestWaifu.MZPeer.SyncPlayerOrientation();
+            orientation_sync.setField("x", $gamePlayer.x);
+            orientation_sync.setField("y", $gamePlayer.y);
+            orientation_sync.setField("direction", $gamePlayer.direction());
+            $gameNetwork.router.sendData(orientation_sync, BestWaifu.MZPeer.Sides.Host);
+            break;
+        case BestWaifu.MZPeer.NetworkRequest.Codes.GOTO_MAP:
+            this.fadeOutAll();
+            SceneManager.goto(Scene_Map);
+        default:
+            console.warn(`Unhandled request from host: ${request.getField("code", -1)}`);
+            break;
+    }
+});
+
 //#endregion
 
+//#region Common Data Listeners
 
+$gameNetwork.router.addNetworkDataListener("sync_player_movement", BestWaifu.MZPeer.Sides.Common, data => {
+    const player_movement_sync = new BestWaifu.MZPeer.SyncPlayerMovement();
+    player_movement_sync.fromData(data);
+
+    // Ignore late ticks and let desync detection fix it later
+    if (player_movement_sync.getField("tick", -1) !== -1 && player_movement_sync.getField("tick") < $gameNetwork.tick) return;
+
+    for (const remotePlayer of $remotePlayers) {
+        if (remotePlayer.username != player_movement_sync.getField("username")) continue;
+        remotePlayer.movementGraph.addNode(player_movement_sync);
+        remotePlayer.movementGraph.applyLatest();
+    }
+    if ($gameNetwork.side == BestWaifu.MZPeer.Sides.Host) {
+        $gameNetwork.router.sendToGuests(player_movement_sync);
+    }
+});
+
+$gameNetwork.router.addNetworkDataListener("sync_player_orientation", BestWaifu.MZPeer.Sides.Common, data => {
+    const player_orientation_sync = new BestWaifu.MZPeer.SyncPlayerOrientation();
+    player_orientation_sync.fromData(data);
+    for (const remotePlayer of $remotePlayers) {
+        if (remotePlayer.username != player_orientation_sync.getField("username")) continue;
+        remotePlayer.locate(player_orientation_sync.getField("x", 0), player_orientation_sync.getField("y", 0));
+        remotePlayer.setDirection(player_orientation_sync.getField("direction", 2));
+    }
+});
+
+//#endregion
+
+//#region Network System Logic/hooks
+
+$gameNetwork.onResync = function() {
+    if (!window["$gameMap"]) return;
+    if (SceneManager._scene && SceneManager._scene instanceof Scene_Map && SceneManager._scene.isActive()) {
+        $gameMap.resyncRemotePlayers();
+    }
+};
+
+BestWaifu.MZPeer.Scene_Map_start = Scene_Map.prototype.start;
+Scene_Map.prototype.start = function () {
+    // Session creation
+    if ($gameNetwork.side === BestWaifu.MZPeer.Sides.Local) {
+        if ($gameNetwork.username) {
+            $gameNetwork.createHostSession();
+            SceneManager.push(BestWaifu.MZPeer.Scene_PreGameLobby);
+        }
+    }
+
+    BestWaifu.MZPeer.Scene_Map_start.call(this);
+
+    // Player creation
+    if ($gameNetwork.side === BestWaifu.MZPeer.Sides.Guest) {
+        if ($allPlayers.length < $gameNetwork.playerList.length) {
+            $gameNetwork.sendRequest(new BestWaifu.MZPeer.NetworkRequest(BestWaifu.MZPeer.NetworkRequest.Codes.INITIALIZE_PLAYERS));
+        }
+    }
+
+    $gameMap.resyncRemotePlayers();
+};
+
+Game_Map.prototype.resyncRemotePlayers = function() {
+    if ($gameNetwork.side !== BestWaifu.MZPeer.Sides.Local) {
+        const reorient_request = new BestWaifu.MZPeer.NetworkRequest(BestWaifu.MZPeer.NetworkRequest.Codes.REORIENT);
+        $gameNetwork.sendData(reorient_request, BestWaifu.MZPeer.Sides.Common);
+    }
+};
+
+BestWaifu.MZPeer.Scene_Base_update = Scene_Base.prototype.update;
+Scene_Base.prototype.update = function () {
+    BestWaifu.MZPeer.Scene_Base_update.call(this);
+    if (!this.isBusy() && !SceneManager.isSceneChanging()) {
+        const error = $gameNetwork.errorQueue.pop();
+        if (error) {
+            SceneManager.push(BestWaifu.MZPeer.Scene_ErrorAlert);
+            SceneManager.prepareNextScene(error);
+        }
+    }
+}
+
+// Disable saving as guest
+BestWaifu.MZPeer.Scene_Map_shouldAutosave = Scene_Map.prototype.shouldAutosave;
+Scene_Map.prototype.shouldAutosave = function () {
+    if ($gameNetwork.side === BestWaifu.MZPeer.Sides.Guest) return false;
+    return BestWaifu.MZPeer.Scene_Map_shouldAutosave.call(this);
+};
+
+BestWaifu.MZPeer.Window_MenuCommand_isSaveEnabled = Window_MenuCommand.prototype.isSaveEnabled;
+Window_MenuCommand.prototype.isSaveEnabled = function () {
+    if ($gameNetwork.side === BestWaifu.MZPeer.Sides.Guest) return false;
+    return BestWaifu.MZPeer.Window_MenuCommand_isSaveEnabled.call(this);
+};
+
+// Disable game end as guest
+BestWaifu.MZPeer.Window_MenuCommand_isGameEndEnabled = Window_MenuCommand.prototype.isGameEndEnabled;
+Window_MenuCommand.prototype.isGameEndEnabled = function () {
+    if ($gameNetwork.side === BestWaifu.MZPeer.Sides.Guest) return false;
+    return BestWaifu.MZPeer.Window_MenuCommand_isGameEndEnabled.call(this);
+};
+
+//-----------------------------------------------------------------------------
+// Bind Player Numbers to Usernames
+//
+BestWaifu.MZPeer.Game_System_initialize = Game_System.prototype.initialize;
+Game_System.prototype.initialize = function () {
+    this._players = { 1: $gameNetwork.username };
+    BestWaifu.MZPeer.Game_System_initialize.call(this);
+};
+
+Game_System.prototype.addPlayer = function (username) {
+    if (Object.values(this._players).includes(username)) return;
+    const currentPlayerCount = Object.keys(this._players).length;
+    this._players[currentPlayerCount + 1] = username;
+};
+
+Game_System.prototype.players = function () {
+    return this._players;
+};
+
+Game_System.prototype.numberForUser = function (username) {
+    for (const N of Object.keys(this._players)) {
+        if (this._players[N] == username) return N;
+    }
+    return -1;
+};
+//#endregion
 
 //#region Common GUI Components
 
@@ -1352,6 +1388,131 @@ BestWaifu.MZPeer.Window_TextEdit.prototype.refresh = function () {
 //#endregion
 
 //#region Netplay Menus
+
+//#region Pregame Lobby
+
+
+BestWaifu.MZPeer.Window_LobbyCommand = function() {
+    this.initialize(...arguments);
+};
+
+BestWaifu.MZPeer.Window_LobbyCommand.prototype = Object.create(Window_HorzCommand.prototype);
+BestWaifu.MZPeer.Window_LobbyCommand.prototype.constructor = BestWaifu.MZPeer.Window_LobbyCommand;
+
+BestWaifu.MZPeer.Window_LobbyCommand.prototype.makeCommandList = function() {
+    this.addCommand("Disconnect", "disconnect");
+    if ($gameNetwork.side === BestWaifu.MZPeer.Sides.Host) {
+        this.addCommand("Start Game", "start", this.startGameEnabled())
+    }
+};
+
+BestWaifu.MZPeer.Window_LobbyCommand.prototype.startGameEnabled = function() {
+    return $gameNetwork.hasGuestConnections();
+};
+
+BestWaifu.MZPeer.Window_PlayerList = function() {
+    this.initialize(...arguments);
+};
+
+BestWaifu.MZPeer.Window_PlayerList.prototype = Object.create(Window_Command.prototype);
+BestWaifu.MZPeer.Window_PlayerList.prototype.constructor = BestWaifu.MZPeer.Window_PlayerList;
+
+BestWaifu.MZPeer.Window_PlayerList.prototype.makeCommandList = function() {
+    this.addCommand(`\\c[6]${$gameNetwork.username}\\c[0]`);
+    for (const username of $gameNetwork.playerList) {
+        this.addCommand(username);
+    }
+};
+
+BestWaifu.MZPeer.Window_PlayerList.prototype.drawItem = function(index) {
+    const rect = this.itemLineRect(index);
+    const align = this.itemTextAlign();
+    this.resetTextColor();
+    this.changePaintOpacity(this.isCommandEnabled(index));
+    this.drawTextEx(this.commandName(index), rect.x, rect.y, rect.width, align);
+};
+
+
+BestWaifu.MZPeer.Scene_PreGameLobby = function() {
+    this.initialize(...arguments);
+};
+
+BestWaifu.MZPeer.Scene_PreGameLobby.prototype = Object.create(Scene_MenuBase.prototype);
+BestWaifu.MZPeer.Scene_PreGameLobby.prototype.constructor = BestWaifu.MZPeer.Scene_PreGameLobby;
+
+BestWaifu.MZPeer.Scene_PreGameLobby.prototype.create = function() {
+    Scene_MenuBase.prototype.create.call(this);
+    this.createAllWindows();
+};
+
+BestWaifu.MZPeer.Scene_PreGameLobby.prototype.createAllWindows = function() {
+    this._statusWindow = new Window_Help(this.statusWindowRect());
+    this._statusWindow.setText(`Invite Code ${$gameNetwork.lobbyId.toUpperCase()}`);
+    this.addWindow(this._statusWindow);
+
+
+    this._playerListCommand = new BestWaifu.MZPeer.Window_PlayerList(this.playerListRect());
+    this._playerListCommand.deselect();
+    this._playerListCommand.deactivate();
+    this.addWindow(this._playerListCommand);
+
+    this._commandWindow = new BestWaifu.MZPeer.Window_LobbyCommand(this.commandWindowRect());
+    this._commandWindow.setHandler('disconnect', this.onDisconnect.bind(this));
+
+
+    this.addWindow(this._commandWindow);
+};
+
+BestWaifu.MZPeer.Scene_PreGameLobby.prototype.onDisconnect = function() {
+    $gameNetwork.disconnectSession();
+    this.fadeOutAll();
+    SceneManager.goto(Scene_Title);
+};
+
+BestWaifu.MZPeer.Scene_PreGameLobby.prototype.onStart = function() {
+    if (!$gameNetwork.hasGuestConnections()) return;
+    this.fadeOutAll();
+    $gameNetwork.sendToGuests(new BestWaifu.MZPeer.NetworkRequest(BestWaifu.MZPeer.NetworkRequest.Codes.GOTO_MAP));
+    this.popScene();
+};
+
+BestWaifu.MZPeer.Scene_PreGameLobby.prototype.statusWindowRect = function() {
+    const wx = 0;
+    const wy = 0;
+    const ww = Graphics.boxWidth;
+    const wh = this.calcWindowHeight(2, false);
+    return new Rectangle(wx, wy, ww, wh);
+};
+
+BestWaifu.MZPeer.Scene_PreGameLobby.prototype.playerListRect = function() {
+    const wx = 0;
+    const wy = this.statusWindowRect().height;
+    const ww = Graphics.boxWidth;
+    const wh = Graphics.boxHeight - this.calcWindowHeight(1, true) - this.calcWindowHeight(2, false);
+    return new Rectangle(wx, wy, ww, wh);
+};
+
+BestWaifu.MZPeer.Scene_PreGameLobby.prototype.commandWindowRect = function() {
+    const wx = 0;
+    const wy = this.playerListRect().height + this.statusWindowRect().height;
+    const ww = Graphics.boxWidth;
+    const wh = this.calcWindowHeight(1, true);
+    return new Rectangle(wx, wy, ww, wh);
+};
+
+BestWaifu.MZPeer.Scene_PreGameLobby.prototype.update = function() {
+    this._playerListCommand.refresh();
+    this._commandWindow.refresh();
+    Scene_Base.prototype.update.call(this);
+};
+
+
+
+//#endregion
+
+
+//#region Join Lobby Scene
+
 //-----------------------------------------------------------------------------
 // Scene_JoinLobby
 //
@@ -1375,7 +1536,6 @@ BestWaifu.MZPeer.Scene_JoinLobby.prototype.onConnected = function () {
     // May have a password system later, idk
     this.onAuthorized();
 };
-
 
 BestWaifu.MZPeer.Scene_JoinLobby.prototype.onAuthorized = function () {
     this.fadeOutAll();
@@ -1452,7 +1612,7 @@ BestWaifu.MZPeer.Scene_JoinLobby.prototype.makeConnection = function (lobbyId) {
     $gameNetwork.hostConnection.on('open', this.onConnected.bind(this));
     $gameNetwork.hostConnection.on('close', $gameNetwork.onHostDisconnected);
     $gameNetwork.hostConnection.on('error', $gameNetwork.onHostConnectionError);
-    $gameNetwork.hostConnection.on('data', $gameNetwork.onHostData);
+    $gameNetwork.hostConnection.on('data', $gameNetwork.router.onHostData.bind($gameNetwork.router));
 };
 
 BestWaifu.MZPeer.Scene_JoinLobby.prototype.onInputOk = function () {
@@ -1474,10 +1634,10 @@ BestWaifu.MZPeer.Scene_JoinLobby.prototype.start = function () {
     Scene_MenuBase.prototype.start.call(this);
     this._editWindow.refresh();
 };
-
+//#endregion
 
 //-----------------------------------------------------------------------------
-// Network Options
+// #region Network Options
 //
 // By default the username is blank and online play won't be possible without it being set
 Object.defineProperty(ConfigManager, "username", {
@@ -1718,16 +1878,7 @@ BestWaifu.MZPeer.Scene_NetplayOptions.prototype.createCommandWindow = function (
 };
 
 BestWaifu.MZPeer.Scene_NetplayOptions.prototype.onDisconnect = function () {
-    if ($gameNetwork.side === BestWaifu.MZPeer.Sides.Host) {
-        $gameNetwork.sendData(
-            new BestWaifu.MZPeer.NetworkResponse(BestWaifu.MZPeer.NetworkResponse.Codes.DISCONNECT),
-            BestWaifu.MZPeer.Sides.Guest);
-        $gameNetwork.destroySession();
-    }
-    if ($gameNetwork.side === BestWaifu.MZPeer.Sides.Guest) {
-        $gameNetwork.sendRequest(new BestWaifu.MZPeer.NetworkRequest(BestWaifu.MZPeer.NetworkRequest.Codes.DISCONNECT));
-        $gameNetwork.destroySession();
-    }
+    $gameNetwork.disconnectSession();
     this.fadeOutAll();
     SceneManager.goto(Scene_Title);
 };
@@ -1767,6 +1918,8 @@ BestWaifu.MZPeer.Scene_NetplayOptions.prototype.start = function () {
     Scene_MenuBase.prototype.start.call(this);
     this._commandWindow.refresh();
 };
+
+//#endregion
 
 
 //-----------------------------------------------------------------------------
@@ -1873,116 +2026,160 @@ BestWaifu.MZPeer.Scene_NetplayWaiting.prototype.terminate = function () {
 
 //#endregion
 
-
-//#region Network System Logic/hooks
-
-$gameNetwork.onResync = function() {
-    if (!window["$gameMap"]) return;
-    if (SceneManager._scene && SceneManager._scene instanceof Scene_Map && SceneManager._scene.isActive()) {
-        $gameMap.resyncRemotePlayers();
-    }
-};
-
-BestWaifu.MZPeer.Scene_Map_start = Scene_Map.prototype.start;
-Scene_Map.prototype.start = function () {
-    BestWaifu.MZPeer.Scene_Map_start.call(this);
-
-    // Session creation
-    if ($gameNetwork.side === BestWaifu.MZPeer.Sides.Local) {
-        if ($gameNetwork.username) {
-            $gameNetwork.createHostSession();
-        }
-    }
-
-    // Player creation
-    if ($gameNetwork.side === BestWaifu.MZPeer.Sides.Guest) {
-        if ($allPlayers.length < $gameNetwork.playerList.length) {
-            $gameNetwork.sendRequest(new BestWaifu.MZPeer.NetworkRequest(BestWaifu.MZPeer.NetworkRequest.Codes.INITIALIZE_PLAYERS));
-        }
-    }
-
-    $gameMap.resyncRemotePlayers();
-};
-
-Game_Map.prototype.resyncRemotePlayers = function() {
-    if ($gameNetwork.side !== BestWaifu.MZPeer.Sides.Local) {
-        const reorient_request = new BestWaifu.MZPeer.NetworkRequest(BestWaifu.MZPeer.NetworkRequest.Codes.REORIENT);
-        $gameNetwork.sendData(reorient_request, BestWaifu.MZPeer.Sides.Common);
-    }
-};
-
-BestWaifu.MZPeer.Scene_Base_update = Scene_Base.prototype.update;
-Scene_Base.prototype.update = function () {
-    BestWaifu.MZPeer.Scene_Base_update.call(this);
-    if (!this.isBusy() && !SceneManager.isSceneChanging()) {
-        const error = $gameNetwork.errorQueue.pop();
-        if (error) {
-            SceneManager.push(BestWaifu.MZPeer.Scene_ErrorAlert);
-            SceneManager.prepareNextScene(error);
-        }
-    }
-}
-
-// Disable saving as guest
-BestWaifu.MZPeer.Scene_Map_shouldAutosave = Scene_Map.prototype.shouldAutosave;
-Scene_Map.prototype.shouldAutosave = function () {
-    if ($gameNetwork.side === BestWaifu.MZPeer.Sides.Guest) return false;
-    return BestWaifu.MZPeer.Scene_Map_shouldAutosave.call(this);
-};
-
-BestWaifu.MZPeer.Window_MenuCommand_isSaveEnabled = Window_MenuCommand.prototype.isSaveEnabled;
-Window_MenuCommand.prototype.isSaveEnabled = function () {
-    if ($gameNetwork.side === BestWaifu.MZPeer.Sides.Guest) return false;
-    return BestWaifu.MZPeer.Window_MenuCommand_isSaveEnabled.call(this);
-};
-
-// Disable game end as guest
-BestWaifu.MZPeer.Window_MenuCommand_isGameEndEnabled = Window_MenuCommand.prototype.isGameEndEnabled;
-Window_MenuCommand.prototype.isGameEndEnabled = function () {
-    if ($gameNetwork.side === BestWaifu.MZPeer.Sides.Guest) return false;
-    return BestWaifu.MZPeer.Window_MenuCommand_isGameEndEnabled.call(this);
-};
-
 //-----------------------------------------------------------------------------
-// Bind Player Numbers to Usernames
+// #region Lobbies/PeerJS
 //
-BestWaifu.MZPeer.Game_System_initialize = Game_System.prototype.initialize;
-Game_System.prototype.initialize = function () {
-    this._players = { 1: $gameNetwork.username };
-    BestWaifu.MZPeer.Game_System_initialize.call(this);
-};
+// Hosting, joining, and leaving lobbies. 
+// * The player that created the lobby is designated host.
+// * Host save data is the data that is loaded and synced.
 
-Game_System.prototype.addPlayer = function (username) {
-    if (Object.values(this._players).includes(username)) return;
-    const currentPlayerCount = Object.keys(this._players).length;
-    this._players[currentPlayerCount + 1] = username;
-};
-
-Game_System.prototype.players = function () {
-    return this._players;
-};
-
-Game_System.prototype.numberForUser = function (username) {
-    for (const N of Object.keys(this._players)) {
-        if (this._players[N] == username) return N;
+$gameNetwork.makeLobbyId = function () {
+    let id = "";
+    for (let i = 0; i < BestWaifu.MZPeer.lobbyIdLength; i++) {
+        id += BestWaifu.MZPeer.lobbyIdCharacters[Math.randomInt(BestWaifu.MZPeer.lobbyIdCharacters.length - 1)];
     }
-    return -1;
+    return id;
 };
+
+// Use the provided base + the lobby ID to make a reconstructable but compact ID
+// that shouldn't clash with the server's IDs.
+$gameNetwork.makePeerId = function (lobby_id) {
+    return BestWaifu.MZPeer.peerIdBase + lobby_id.toLowerCase();
+};
+
+$gameNetwork.createHostSession = function () {
+    if (!$gameNetwork.username) return;
+    if ($gameNetwork.offlineMode) return;
+
+    // We make an ID of our own here for user friendliness
+    $gameNetwork.lobbyId = $gameNetwork.makeLobbyId();
+
+    const peer = new Peer($gameNetwork.makePeerId($gameNetwork.lobbyId));
+    $gameNetwork.open = true;
+
+    peer.on('open', function (id) {
+        console.log(`Successfully opened session with id ${id}`);
+    });
+
+    peer.on('connection', $gameNetwork.onPeerConnection);
+    peer.on('error', $gameNetwork.onError);
+
+    $gameNetwork.peer = peer;
+    $gameNetwork.side = BestWaifu.MZPeer.Sides.Host;
+
+    return peer;
+};
+
+$gameNetwork.createGuestSession = function () {
+    if (!$gameNetwork.username) return;
+    if ($gameNetwork.offlineMode) return;
+    // We don't generate an ID here because we only need the host's id to be
+    // user friendly. The peer server will automatically generate the ID.
+    const peer = new Peer();
+    $gameNetwork.open = false;
+
+    peer.on('open', function (id) {
+        console.log(`Successfully connected to traversal server with id ${id}`);
+    });
+
+    peer.on('connection', $gameNetwork.onPeerConnection);
+    peer.on('error', $gameNetwork.onError);
+
+    $gameNetwork.peer = peer;
+    $gameNetwork.side = BestWaifu.MZPeer.Sides.Guest;
+    return peer;
+};
+
 //#endregion
 
+//#region Synced Game Character Objects
 
-//-----------------------------------------------------------------------------
-// RMMZ Core Changes
-//
+BestWaifu.MZPeer.Game_Character_initMembers = Game_Character.prototype.initMembers;
+Game_Character.prototype.initMembers = function () {
+    this.movementGraph = new BestWaifu.MZPeer.NetworkGraph(); // Used to track movement history
+    this.movementGraph.onApply = this.onMovementApply.bind(this);
+    this._remoteMoveQueue = [];
+    BestWaifu.MZPeer.Game_Character_initMembers.call(this);
+};
+
+Game_Character.prototype.onMovementApply = function (data) {
+    /*if (!data["type"]) return;
+    switch (data.type) {
+        case "sync_player_movement": {
+            const move_sync_data = new BestWaifu.MZPeer.SyncPlayerMovement();
+            move_sync_data.fromData(data);
+            this._remoteMoveQueue.push(move_sync_data);
+            break;
+        }
+
+        case "sync_player_orientation": {
+            const orientation_sync_data = new BestWaifu.MZPeer.SyncPlayerOrientation();
+            orientation_sync_data.fromData(data);
+            this.locate(orientation_sync_data.getField("x", this.x), orientation_sync_data.getField("y", this.y));
+            this.setDirection(orientation_sync_data.getField("direction", this.direction()));
+            break;
+        }
+    } */
+};
+
+BestWaifu.MZPeer.Game_Character_update = Game_Character.prototype.update;
+Game_Character.prototype.update = function () {
+    this.moveByNetwork();
+    BestWaifu.MZPeer.Game_Character_update.call(this);
+};
+
+BestWaifu.MZPeer.Game_Character_locate = Game_Character.prototype.locate;
+Game_Character.prototype.locate = function (x, y) {
+    /* this._remoteMoveQueue = []; // Clear move queue to avoid going out of sync
+    // Log the relocation in the movement graph
+    const player_orientation_sync = new BestWaifu.MZPeer.SyncPlayerOrientation();
+    this.movementGraph = new BestWaifu.MZPeer.NetworkGraph();
+    player_orientation_sync.setField("x", x);
+    player_orientation_sync.setField("y", y);
+    player_orientation_sync.setField("direction", this.direction());
+    this.movementGraph.addNode(player_orientation_sync); */
+    BestWaifu.MZPeer.Game_Character_locate.call(this, x, y);
+}
+
+Game_Character.prototype.moveByNetwork = function () {
+    if (!this._remoteMoveQueue.length) return;
+    if (!this.isMoving()) {
+        const move_sync_data = this._remoteMoveQueue.shift();
+        this.setMoveSpeed(move_sync_data.getField("speed", this.moveSpeed()));
+        this.moveStraight(move_sync_data.getField("direction"));
+    }
+};
+
+BestWaifu.MZPeer.Remote_Player = function () {
+    this.initialize(...arguments);
+}
+BestWaifu.MZPeer.Remote_Player.prototype = Object.create(Game_Character.prototype);
+BestWaifu.MZPeer.Remote_Player.prototype.constructor = BestWaifu.MZPeer.Remote_Player;
+
+BestWaifu.MZPeer.Remote_Player.prototype.initialize = function (username) {
+    this.username = username; // Used to identify remote players
+    Game_Character.prototype.initialize.call(this);
+};
+
+BestWaifu.MZPeer.Remote_Player.prototype.actor = function () {
+    const N = $gameSystem.numberForUser(this.username) - 1;
+    if (N < 0) return null;
+    return $gameParty.members()[N] || null;
+};
+
+BestWaifu.MZPeer.Remote_Player.prototype.refresh = function () {
+    const actor = this.actor();
+    const characterName = actor ? actor.characterName() : "";
+    const characterIndex = actor ? actor.characterIndex() : 0;
+    this.setImage(characterName, characterIndex);
+};
+
+// #endregion
 
 //-----------------------------------------------------------------------------
 // #region Real Time Character Syncing
 //
 // Make the players visibly appear on screen and move around in real time
-
-// TODO: Check for desync 500ms and fix it via network graph merging
-// Only send a slice of the network graph according to the tick difference
-// to avoid needless packet size.
 
 BestWaifu.MZPeer.Scene_Map_updateMain = Scene_Map.prototype.updateMain;
 Scene_Map.prototype.updateMain = function () {
@@ -2093,26 +2290,70 @@ Game_Player.prototype.refresh = function () {
     }
 };
 
-// TODO: Add functionality for destroying remote players on disconnect
-
 BestWaifu.MZPeer.Game_Player_executeMove = Game_Player.prototype.executeMove;
 Game_Player.prototype.executeMove = function (dir) {
     BestWaifu.MZPeer.Game_Player_executeMove.call(this, dir);
-    const move_sync_data = new BestWaifu.MZPeer.SyncPlayerMovement();
+    /*const move_sync_data = new BestWaifu.MZPeer.SyncPlayerMovement();
     move_sync_data.setField("direction", dir);
     move_sync_data.setField("speed", this.realMoveSpeed());
     this.movementGraph.addNode(move_sync_data);
-    move_sync_data.setField("tick", $gameNetwork.tick);
-    $gameNetwork.sendData(move_sync_data, BestWaifu.MZPeer.Sides.Common);
+    move_sync_data.setField("tick", this.movementGraph.latestTick());
+    $gameNetwork.sendData(move_sync_data, BestWaifu.MZPeer.Sides.Common); */
 };
 
 //#endregion
 
 //-----------------------------------------------------------------------------
-// #region Real Time Data Syncing
+// #region Map Transfer Syncing
 //
-// Switches, variables, gold, exp, etc. all of this should be synced both ways
+// When any player transfers all players should transfer with them.
 
+//-----------------------------------------------------------------------------
+// #region Game Data Syncing
+//
+
+// Switches
+
+// Variables
+
+// Gold
+
+// EXP
+
+// Item Gain
+
+// Item Loss
+
+// HP gain
+
+// HP loss
+
+// MP gain
+
+// MP loss
+
+// TP gain
+
+// TP loss
+
+// Parameter Change
+
+// Skill Change
+
+// Equipment Change
+
+// Name Change
+
+// Class Change
+
+// Nickname Change
+
+// Profile Change
+
+
+//#endregion
+
+//#region Timer Syncing
 
 //#endregion
 
@@ -2131,5 +2372,36 @@ Game_Player.prototype.executeMove = function (dir) {
 // #region Battle Syncing
 //
 // The meat and potatos of it all. Complex syncing of battle mechanics and state.
+
+//#region Standard Turn Battle
+
+//#endregion
+
+//#region Active Turn Battle (Wait)
+
+//#endregion
+
+//#region Active Turn Battle (Realtime)
+
+//#endregion
+
+//#endregion
+
+//-----------------------------------------------------------------------------
+// #region Plugin Commands
+//
+// Provide plugin commands for:
+// - Spawning the last pending player at a given position
+// #endregion
+
+
+//-----------------------------------------------------------------------------
+// #region Script Calls
+//
+// Provide script calls for:
+// - Redefining what "Player" refers to in a move route
+
+
+
 
 //#endregion
