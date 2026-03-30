@@ -358,6 +358,7 @@ BestWaifu.MZPeer.SyncPlayerOrientation.prototype = Object.create(BestWaifu.MZPee
 BestWaifu.MZPeer.SyncPlayerOrientation.prototype.constructor = BestWaifu.MZPeer.SyncPlayerOrientation;
 BestWaifu.MZPeer.SyncPlayerOrientation.prototype.initialize = function () {
     BestWaifu.MZPeer.NetworkData.prototype.initialize.call(this, "sync_player_orientation");
+    this.addField(BestWaifu.MZPeer.NetworkData.DataTypes.INT, "tick");
     this.addField(BestWaifu.MZPeer.NetworkData.DataTypes.INT, "direction");
     this.addField(BestWaifu.MZPeer.NetworkData.DataTypes.INT, "x");
     this.addField(BestWaifu.MZPeer.NetworkData.DataTypes.INT, "y");
@@ -388,11 +389,6 @@ BestWaifu.MZPeer.NetworkGraphNode.create = function (tick, network_data) {
     return network_graph_node;
 };
 
-/** Use to apply the state for this part of the graph's history. */
-BestWaifu.MZPeer.NetworkGraphNode.prototype.apply = function () {
-    this.handleApply(this.getField("network_data"));
-};
-
 /** Get the network data as a NetworkData object */
 BestWaifu.MZPeer.NetworkGraphNode.prototype.networkData = function () {
     const data = this.getField("network_data");
@@ -400,9 +396,6 @@ BestWaifu.MZPeer.NetworkGraphNode.prototype.networkData = function () {
     networkData.fromData(data);
     return networkData;
 };
-
-/** Callback function for defining this node's apply behavior. */
-BestWaifu.MZPeer.NetworkGraphNode.prototype.handleApply = function (data) { }
 
 /** A continuous graph of networked actions taken since initialization. */
 BestWaifu.MZPeer.NetworkGraph = function () {
@@ -432,19 +425,6 @@ BestWaifu.MZPeer.NetworkGraph.prototype.getSlice = function(size) {
 /** Increment the graph's tick. */
 BestWaifu.MZPeer.NetworkGraph.prototype.tick = function () {
     this.setField("tick", this.getField("tick", 0) + 1);
-    $gameNetwork.tick = this.getField("tick");
-};
-
-/** Apply the entire graph. Used for catching up or verifying sync. */
-BestWaifu.MZPeer.NetworkGraph.prototype.apply = function () {
-    for (const node of this._nodes) {
-        const tick = node.getField("tick", 0);
-        if (tick <= $gameNetwork.tick) continue;
-        if (tick > $gameNetwork.tick) {
-            node.apply();
-            this.tick();
-        }
-    }
 };
 
 /** Get the latest node. Nodes are always ticked in order and you cannot have two nodes on the same tick. */
@@ -462,7 +442,20 @@ BestWaifu.MZPeer.NetworkGraph.prototype.latestTick = function () {
 BestWaifu.MZPeer.NetworkGraph.prototype.applyLatest = function () {
     const latest = this.latestNode();
     if (latest) {
-        latest.apply();
+        const tick = latest.getField("tick", 0);
+        if (tick <= this.getField("tick", 0)) return;
+        this.onApply(latest.networkData());
+        this.tick();
+    }
+};
+
+/** Apply the entire graph. Used for catching up or verifying sync. */
+BestWaifu.MZPeer.NetworkGraph.prototype.apply = function () {
+    for (const node of this._nodes) {
+        const tick = node.getField("tick", 0);
+        if (tick <= this.getField("tick", 0)) continue;
+        this.onApply(node.networkData())
+        this.tick();
     }
 };
 
@@ -477,15 +470,14 @@ BestWaifu.MZPeer.NetworkGraph.prototype.syncStatus = function () {
     const latestNode = this.latestNode();
     if (!latestNode) return BestWaifu.MZPeer.NetworkGraph.SyncStatuses.NETWORK_SYNCED;
     const latestTick = latestNode.getField("tick", 0);
-    if ($gameNetwork.tick < latestTick) return BestWaifu.MZPeer.NetworkGraph.SyncStatuses.NETWORK_BEHIND;
-    if ($gameNetwork.tick > latestTick) return BestWaifu.MZPeer.NetworkGraph.SyncStatuses.NETWORK_AHEAD;
+    if (this.getField("tick", 0) < latestTick) return BestWaifu.MZPeer.NetworkGraph.SyncStatuses.NETWORK_BEHIND;
+    if (this.getField("tick", 0) > latestTick) return BestWaifu.MZPeer.NetworkGraph.SyncStatuses.NETWORK_AHEAD;
     return BestWaifu.MZPeer.NetworkGraph.SyncStatuses.NETWORK_SYNCED;
 };
 
 /** Completely clear the graph. Do this on re-initialization to avoid a stupid long history eating memory over time. */
 BestWaifu.MZPeer.NetworkGraph.prototype.clear = function () {
     this.setField("tick", 0);
-    $gameNetwork.tick = 0;
     this._nodes = [];
 };
 
@@ -503,12 +495,12 @@ BestWaifu.MZPeer.NetworkGraph.prototype.merge = function (other_graph) {
 /** To be overriden with a function to call when a node is applied. */
 BestWaifu.MZPeer.NetworkGraph.prototype.onApply = function (data) { };
 
-/** Add a node to the graph timeline holding the given network data with the given callback function. */
+/** Add a node to the graph timeline holding the given network data. */
 BestWaifu.MZPeer.NetworkGraph.prototype.addNode = function (network_data) {
-    this.tick();
-    const new_node = BestWaifu.MZPeer.NetworkGraphNode.create(this.getField("tick"), network_data);
-    new_node.handleApply = this.onApply;
+    const new_node = BestWaifu.MZPeer.NetworkGraphNode.create(network_data.getField("tick", this.getField("tick")), network_data);
     this._nodes.push(new_node);
+    
+    // Decay exceptionally old ticks
     if (this._nodes.length > 256) {
         this._nodes.shift();
     }
@@ -519,7 +511,6 @@ BestWaifu.MZPeer.NetworkGraph.prototype.fromHistory = function (history) {
     for (const data of history) {
         const node = new BestWaifu.MZPeer.NetworkGraphNode();
         node.fromData(data);
-        node.handleApply = this.onApply;
         this._nodes.push(node);
     }
 };
@@ -683,7 +674,6 @@ $gameNetwork.reset = function () {
     $gameNetwork.side = BestWaifu.MZPeer.Sides.Local; // Our side
     $gameNetwork.playerList = []; // A list of NetworkPlayers
     $gameNetwork.spawnablePlayers = []; // A queue of players waiting to spawn.
-    $gameNetwork.tick = 0; // Used to track the current time'
 
     if ($gameNetwork["resync_timer"]) {
         clearInterval($gameNetwork["resync_timer"])
@@ -1065,7 +1055,6 @@ $gameNetwork.router.addNetworkDataListener("sync_player_creation", BestWaifu.MZP
     const player_creation_sync = new BestWaifu.MZPeer.SyncPlayerCreation();
     player_creation_sync.fromData(data);
     if (player_creation_sync.getField("username") == $gameNetwork.username) {
-        $gameNetwork.tick = player_creation_sync.getField("tick", 0);
         SceneManager.goto(Scene_Map);
     } else {
         $gameNetwork.createRemotePlayer(
@@ -1105,14 +1094,12 @@ $gameNetwork.router.addNetworkDataListener("sync_player_movement", BestWaifu.MZP
     const player_movement_sync = new BestWaifu.MZPeer.SyncPlayerMovement();
     player_movement_sync.fromData(data);
 
-    // Ignore late ticks and let desync detection fix it later
-    if (player_movement_sync.getField("tick", -1) !== -1 && player_movement_sync.getField("tick") < $gameNetwork.tick) return;
-
     for (const remotePlayer of $remotePlayers) {
         if (remotePlayer.username != player_movement_sync.getField("username")) continue;
         remotePlayer.movementGraph.addNode(player_movement_sync);
         remotePlayer.movementGraph.applyLatest();
     }
+
     if ($gameNetwork.side == BestWaifu.MZPeer.Sides.Host) {
         $gameNetwork.router.sendToGuests(player_movement_sync);
     }
@@ -1509,7 +1496,6 @@ BestWaifu.MZPeer.Scene_PreGameLobby.prototype.update = function() {
 
 
 //#endregion
-
 
 //#region Join Lobby Scene
 
@@ -1921,7 +1907,6 @@ BestWaifu.MZPeer.Scene_NetplayOptions.prototype.start = function () {
 
 //#endregion
 
-
 //-----------------------------------------------------------------------------
 // Scene_NetplayWaiting
 //
@@ -2094,62 +2079,6 @@ $gameNetwork.createGuestSession = function () {
 
 //#region Synced Game Character Objects
 
-BestWaifu.MZPeer.Game_Character_initMembers = Game_Character.prototype.initMembers;
-Game_Character.prototype.initMembers = function () {
-    this.movementGraph = new BestWaifu.MZPeer.NetworkGraph(); // Used to track movement history
-    this.movementGraph.onApply = this.onMovementApply.bind(this);
-    this._remoteMoveQueue = [];
-    BestWaifu.MZPeer.Game_Character_initMembers.call(this);
-};
-
-Game_Character.prototype.onMovementApply = function (data) {
-    /*if (!data["type"]) return;
-    switch (data.type) {
-        case "sync_player_movement": {
-            const move_sync_data = new BestWaifu.MZPeer.SyncPlayerMovement();
-            move_sync_data.fromData(data);
-            this._remoteMoveQueue.push(move_sync_data);
-            break;
-        }
-
-        case "sync_player_orientation": {
-            const orientation_sync_data = new BestWaifu.MZPeer.SyncPlayerOrientation();
-            orientation_sync_data.fromData(data);
-            this.locate(orientation_sync_data.getField("x", this.x), orientation_sync_data.getField("y", this.y));
-            this.setDirection(orientation_sync_data.getField("direction", this.direction()));
-            break;
-        }
-    } */
-};
-
-BestWaifu.MZPeer.Game_Character_update = Game_Character.prototype.update;
-Game_Character.prototype.update = function () {
-    this.moveByNetwork();
-    BestWaifu.MZPeer.Game_Character_update.call(this);
-};
-
-BestWaifu.MZPeer.Game_Character_locate = Game_Character.prototype.locate;
-Game_Character.prototype.locate = function (x, y) {
-    /* this._remoteMoveQueue = []; // Clear move queue to avoid going out of sync
-    // Log the relocation in the movement graph
-    const player_orientation_sync = new BestWaifu.MZPeer.SyncPlayerOrientation();
-    this.movementGraph = new BestWaifu.MZPeer.NetworkGraph();
-    player_orientation_sync.setField("x", x);
-    player_orientation_sync.setField("y", y);
-    player_orientation_sync.setField("direction", this.direction());
-    this.movementGraph.addNode(player_orientation_sync); */
-    BestWaifu.MZPeer.Game_Character_locate.call(this, x, y);
-}
-
-Game_Character.prototype.moveByNetwork = function () {
-    if (!this._remoteMoveQueue.length) return;
-    if (!this.isMoving()) {
-        const move_sync_data = this._remoteMoveQueue.shift();
-        this.setMoveSpeed(move_sync_data.getField("speed", this.moveSpeed()));
-        this.moveStraight(move_sync_data.getField("direction"));
-    }
-};
-
 BestWaifu.MZPeer.Remote_Player = function () {
     this.initialize(...arguments);
 }
@@ -2172,6 +2101,49 @@ BestWaifu.MZPeer.Remote_Player.prototype.refresh = function () {
     const characterName = actor ? actor.characterName() : "";
     const characterIndex = actor ? actor.characterIndex() : 0;
     this.setImage(characterName, characterIndex);
+};
+
+Remote_Player.prototype.onMovementApply = function (data) {
+    if (!data["type"]) return;
+    switch (data.type) {
+        case "sync_player_movement": {
+            const move_sync_data = new BestWaifu.MZPeer.SyncPlayerMovement();
+            move_sync_data.fromData(data);
+            this._remoteMoveQueue.push(move_sync_data);
+            break;
+        }
+
+        case "sync_player_orientation": {
+            const orientation_sync_data = new BestWaifu.MZPeer.SyncPlayerOrientation();
+            orientation_sync_data.fromData(data);
+            this.locate(orientation_sync_data.getField("x", this.x), orientation_sync_data.getField("y", this.y));
+            this.setDirection(orientation_sync_data.getField("direction", this.direction()));
+            break;
+        }
+    }
+};
+
+BestWaifu.MZPeer.Remote_Player_initMembers = Remote_Player.prototype.initMembers;
+Remote_Player.prototype.initMembers = function () {
+    this.movementGraph = new BestWaifu.MZPeer.NetworkGraph(); // Used to track movement history
+    this.movementGraph.onApply = this.onMovementApply.bind(this);
+    this._remoteMoveQueue = [];
+    BestWaifu.MZPeer.Remote_Player_initMembers.call(this);
+};
+
+BestWaifu.MZPeer.Remote_Player_update = Remote_Player.prototype.update;
+Remote_Player.prototype.update = function () {
+    this.moveByNetwork();
+    BestWaifu.MZPeer.Remote_Player_update.call(this);
+};
+
+Remote_Player.prototype.moveByNetwork = function () {
+    if (!this._remoteMoveQueue.length) return;
+    if (!this.isMoving()) {
+        const move_sync_data = this._remoteMoveQueue.shift();
+        this.setMoveSpeed(move_sync_data.getField("speed", this.moveSpeed()));
+        this.moveStraight(move_sync_data.getField("direction"));
+    }
 };
 
 // #endregion
@@ -2222,7 +2194,6 @@ $gameNetwork.createRemotePlayer = function (username, x, y) {
 
     if ($gameNetwork.side === BestWaifu.MZPeer.Sides.Host) {
         const player_creation_sync = new BestWaifu.MZPeer.SyncPlayerCreation();
-        player_creation_sync.setField("tick", $gameNetwork.tick);
         player_creation_sync.setField("username", username);
         player_creation_sync.setField("x", x);
         player_creation_sync.setField("y", y);
@@ -2293,12 +2264,37 @@ Game_Player.prototype.refresh = function () {
 BestWaifu.MZPeer.Game_Player_executeMove = Game_Player.prototype.executeMove;
 Game_Player.prototype.executeMove = function (dir) {
     BestWaifu.MZPeer.Game_Player_executeMove.call(this, dir);
-    /*const move_sync_data = new BestWaifu.MZPeer.SyncPlayerMovement();
+    
+    const move_sync_data = new BestWaifu.MZPeer.SyncPlayerMovement();
     move_sync_data.setField("direction", dir);
     move_sync_data.setField("speed", this.realMoveSpeed());
+
     this.movementGraph.addNode(move_sync_data);
+    this.movementGraph.applyLatest();
+
     move_sync_data.setField("tick", this.movementGraph.latestTick());
-    $gameNetwork.sendData(move_sync_data, BestWaifu.MZPeer.Sides.Common); */
+    $gameNetwork.sendData(move_sync_data, BestWaifu.MZPeer.Sides.Common);
+};
+
+
+BestWaifu.MZPeer.Game_Player_locate = Game_Player.prototype.locate;
+Game_Player.prototype.locate = function (x, y) {
+    BestWaifu.MZPeer.Game_Player_locate.call(this, x, y);
+    
+    this._remoteMoveQueue = []; // Clear move queue to avoid going out of sync
+    
+    const player_orientation_sync = new BestWaifu.MZPeer.SyncPlayerOrientation();
+    this.movementGraph = new BestWaifu.MZPeer.NetworkGraph();
+
+    player_orientation_sync.setField("x", x);
+    player_orientation_sync.setField("y", y);
+    player_orientation_sync.setField("direction", this.direction());
+
+    this.movementGraph.addNode(player_orientation_sync);
+    this.movementGraph.applyLatest();
+
+    player_orientation_sync.setField("tick", this.movementGraph.latestTick());
+    $gameNetwork.sendData(player_orientation_sync, BestWaifu.MZPeer.Sides.Common);
 };
 
 //#endregion
