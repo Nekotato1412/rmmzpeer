@@ -2111,6 +2111,9 @@ BestWaifu.MZPeer.Window_NetworkDataLog.prototype.makeCommandList = function() {
 BestWaifu.MZPeer.Window_NetworkDataLog.prototype.pushLog = function(message) {
     this._logMessages.push(message);
     this.refresh();
+    this.forceSelect(this.maxItems());
+    this.deselect();
+    this.deactivate();
 };
 
 BestWaifu.MZPeer.Scene_Map_createAllWindows = Scene_Map.prototype.createAllWindows;
