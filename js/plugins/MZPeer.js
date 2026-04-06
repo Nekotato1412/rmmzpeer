@@ -1059,10 +1059,11 @@ $gameNetwork.dropPeer = function (username) {
         $gameNetwork.peerConnections[connIndex].close();
         $gameNetwork.peerConnections.splice(connIndex, 1);
     }
+
+    $gameNetwork.purgePlayer(username);
     if ($gameNetwork.router) {
         $gameNetwork.router.purgePeer(username);
     }
-    $gameNetwork.purgePlayer(username);
 };
 
 /** For purging player objects. */
@@ -1070,6 +1071,7 @@ $gameNetwork.purgePlayer = function(username) {
     $remotePlayers = $remotePlayers.filter(p => p.username !== username);
     $allPlayers = $allPlayers.filter(p => p.username !== username);
     $gameNetwork.playerList = $gameNetwork.playerList.filter(u => u !== username);
+    $gameNetwork.spawnablePlayers = $gameNetwork.spawnablePlayers.filter(u => u !== username);
 };
 
 /** Safe method to call on the guest for getting rid of a given player's data. */
@@ -1078,6 +1080,8 @@ $gameNetwork.destroyPlayer = function(username) {
     if ($gameNetwork.router) {
         $gameNetwork.router.purgePeer(username);
     }
+    $gameMap.requestRefresh();
+    $gamePlayer.refresh();
 };
 
 $gameNetwork.makePlayerList = function () {
@@ -1242,9 +1246,9 @@ $gameNetwork.router.addNetworkDataListener("request", BestWaifu.MZPeer.Sides.Hos
 
             /** Let guests know the player is gone. */
             $gameNetwork.sendToGuests(
-                new BestWaifu.MZPeer.SyncPlayerDestruction(peerConnection.metadata?.username)
+                new BestWaifu.MZPeer.SyncPlayerDestruction(request.username())
             );
-            
+
             break;
         }
 
@@ -1708,7 +1712,7 @@ Game_System.prototype.initialize = function () {
     BestWaifu.MZPeer.Game_System_initialize.call(this);
 };
 
-Game_System.prototype.addPlayer = function (username) {
+Game_System.prototype.addPlayer = function(username) {
     if (Object.values(this._players).includes(username)) return;
     const currentPlayerCount = Object.keys(this._players).length;
     this._players[currentPlayerCount + 1] = username;
