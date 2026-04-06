@@ -411,6 +411,17 @@ BestWaifu.MZPeer.SyncPlayerCreation.prototype.initialize = function () {
     this.addField(BestWaifu.MZPeer.NetworkData.DataTypes.INT, "y");
 };
 
+BestWaifu.MZPeer.SyncPlayerDestruction = function() {
+    this.initialize(...arguments);
+};
+
+BestWaifu.MZPeer.SyncPlayerDestruction.prototype = Object.create(BestWaifu.MZPeer.NetworkData.prototype);
+BestWaifu.MZPeer.SyncPlayerDestruction.prototype.constructor = BestWaifu.MZPeer.SyncPlayerDestruction;
+BestWaifu.MZPeer.SyncPlayerDestruction.prototype.initialize = function(username="") {
+    BestWaifu.MZPeer.NetworkData.prototype.initialize.call(this, "sync_player_destruction");
+    this.setField("username", username);
+};
+
 
 BestWaifu.MZPeer.SyncPlayerMovement = function () {
     this.initialize(...arguments);
@@ -1027,7 +1038,8 @@ $gameNetwork.showJoinLobby = function () {
     SceneManager.prepareNextScene(peer, BestWaifu.MZPeer.lobbyIdLength);
 };
 
-// Destroy the current session
+
+// Destroy the current session (Common)
 $gameNetwork.destroySession = function () {
     if ($gameNetwork.peer && !$gameNetwork.peer.destroyed) {
         $gameNetwork.peer.destroy();
@@ -1036,13 +1048,33 @@ $gameNetwork.destroySession = function () {
     console.log("Successfully destroyed the session.");
 };
 
-// Drop a peer
+// Drop a peer (Host)
 $gameNetwork.dropPeer = function (username) {
+    if ($gameNetwork.side !== BestWaifu.MZPeer.Sides.Host) {
+        throw new Error("Only host can drop peers.");
+    }
+
     const connIndex = $gameNetwork.peerConnections.findIndex(c => c.metadata.username === username);
     if (connIndex >= 0) {
         $gameNetwork.peerConnections[connIndex].close();
         $gameNetwork.peerConnections.splice(connIndex, 1);
     }
+    if ($gameNetwork.router) {
+        $gameNetwork.router.purgePeer(username);
+    }
+    $gameNetwork.purgePlayer(username);
+};
+
+/** For purging player objects. */
+$gameNetwork.purgePlayer = function(username) {
+    $remotePlayers = $remotePlayers.filter(p => p.username !== username);
+    $allPlayers = $allPlayers.filter(p => p.username !== username);
+    $gameNetwork.playerList = $gameNetwork.playerList.filter(u => u !== username);
+};
+
+/** Safe method to call on the guest for getting rid of a given player's data. */
+$gameNetwork.destroyPlayer = function(username) {
+    $gameNetwork.purgePlayer(username);
     if ($gameNetwork.router) {
         $gameNetwork.router.purgePeer(username);
     }
@@ -1176,10 +1208,14 @@ $gameNetwork.onPeerConnection = function (dataConnection) {
 
 $gameNetwork.onPeerDisconnection = function (peerConnection) {
     $gameNetwork.pushLog(`${peerConnection.metadata?.username} disconnected.`);
-    $gameNetwork.peerConnections = $gameNetwork.peerConnections.filter(c => c.open);
+    
+    /** Drop them on our end. */
+    $gameNetwork.dropPeer(peerConnection.metadata?.username);
 
-    $gameNetwork.makePlayerList(); // Refresh the player list
-    $gameNetwork.router.sendToGuests(new BestWaifu.MZPeer.SyncPlayerList($gameNetwork.playerList)); // Refresh the player list for guests
+    /** Let guests know the player is gone. */
+    $gameNetwork.sendToGuests(
+        new BestWaifu.MZPeer.SyncPlayerDestruction(peerConnection.metadata?.username)
+    );
 
     if (BestWaifu.MZPeer.PlayerLeaveVar > 0) {
         $gameVariables.setValue(BestWaifu.MZPeer.PlayerLeaveVar, $gameSystem.numberForUser(peerConnection.metadata?.username));
@@ -1200,7 +1236,15 @@ $gameNetwork.router.addNetworkDataListener("request", BestWaifu.MZPeer.Sides.Hos
 
         case BestWaifu.MZPeer.NetworkRequest.Codes.DISCONNECT: {
             $gameNetwork.pushLog(`[Host] ${request.username()} disconnected.`);
+            
+            /** Drop them on our end. */
             $gameNetwork.dropPeer(request.username());
+
+            /** Let guests know the player is gone. */
+            $gameNetwork.sendToGuests(
+                new BestWaifu.MZPeer.SyncPlayerDestruction(peerConnection.metadata?.username)
+            );
+            
             break;
         }
 
@@ -1345,6 +1389,22 @@ $gameNetwork.router.addNetworkDataListener("sync_player_creation", BestWaifu.MZP
         );
     }
     $gameNetwork.pushLog(`[Guest] Successfully synced ${$allPlayers.length - 1} players.`)
+});
+
+$gameNetwork.router.addNetworkDataListener("sync_player_destruction", BestWaifu.MZPeer.Sides.Guest, data => {
+    const player_destruction = new BestWaifu.MZPeer.SyncPlayerDestruction();
+    player_destruction.fromData(data);
+    if (player_destruction.getField("username", null) === null) throw new Error("Username must be defined.");
+    
+    if (BestWaifu.MZPeer.PlayerLeaveVar > 0) {
+        $gameVariables.setValue(BestWaifu.MZPeer.PlayerLeaveVar, $gameSystem.numberForUser(peerConnection.metadata?.username));
+    }
+
+    if (BestWaifu.MZPeer.PlayerLeaveCE > 0) {
+        $gameTemp.reserveCommonEvent(BestWaifu.MZPeer.PlayerLeaveCE);
+    }
+
+    $gameNetwork.destroyPlayer(player_destruction.getField("username"));
 });
 
 $gameNetwork.router.addNetworkDataListener("request", BestWaifu.MZPeer.Sides.Guest, data => {
