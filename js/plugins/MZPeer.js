@@ -1632,11 +1632,11 @@ Window_MenuCommand.prototype.isSaveEnabled = function () {
     return BestWaifu.MZPeer.Window_MenuCommand_isSaveEnabled.call(this);
 };
 
-// Disable game end as guest
-BestWaifu.MZPeer.Window_MenuCommand_isGameEndEnabled = Window_MenuCommand.prototype.isGameEndEnabled;
-Window_MenuCommand.prototype.isGameEndEnabled = function () {
-    if ($gameNetwork.side === BestWaifu.MZPeer.Sides.Guest) return false;
-    return BestWaifu.MZPeer.Window_MenuCommand_isGameEndEnabled.call(this);
+// Make game end disconnect the session
+BestWaifu.MZPeer.Scene_GameEnd_commandToTitle = Scene_GameEnd.prototype.commandToTitle;
+Scene_GameEnd.prototype.commandToTitle = function() {
+    $gameNetwork.disconnectSession();
+    BestWaifu.MZPeer.Scene_GameEnd_commandToTitle.call(this);
 };
 
 //-----------------------------------------------------------------------------
@@ -1829,7 +1829,6 @@ BestWaifu.MZPeer.Window_TextEdit.prototype.refresh = function () {
 //#region Netplay Menus
 
 //#region Pregame Lobby
-
 
 BestWaifu.MZPeer.Window_LobbyCommand = function() {
     this.initialize(...arguments);
@@ -2085,7 +2084,6 @@ BestWaifu.MZPeer.Scene_JoinLobby.prototype.start = function () {
 };
 //#endregion
 
-
 //#region Network Debug Windows
 
 BestWaifu.MZPeer.Window_NetworkDataLog = function() {
@@ -2240,7 +2238,7 @@ BestWaifu.MZPeer.Window_NetplayOptions.prototype.makeCommandList = function () {
 
 
 //-----------------------------------------------------------------------------
-// Scene_UsernameInput
+// #region Scene_UsernameInput
 //
 BestWaifu.MZPeer.Scene_UsernameInput = function () {
     this.initialize(...arguments);
@@ -2304,9 +2302,10 @@ BestWaifu.MZPeer.Scene_UsernameInput.prototype.start = function () {
     Scene_MenuBase.prototype.start.call(this);
     this._editWindow.refresh();
 };
+//#endregion
 
 //-----------------------------------------------------------------------------
-// Scene_NetplayOptions
+// #region Scene_NetplayOptions
 //
 BestWaifu.MZPeer.Scene_NetplayOptions = function () {
     this.initialize(...arguments);
@@ -2424,7 +2423,7 @@ BestWaifu.MZPeer.Scene_NetplayOptions.prototype.start = function () {
 //#endregion
 
 //-----------------------------------------------------------------------------
-// Scene_NetplayWaiting
+// #region Scene_NetplayWaiting
 //
 // A scene to send the guest to while things are loading.
 BestWaifu.MZPeer.Scene_NetplayWaiting = function () {
@@ -2511,6 +2510,10 @@ BestWaifu.MZPeer.Scene_NetplayWaiting.prototype.terminate = function () {
     }
 };
 
+//#endregion
+
+
+//#endregion
 
 //#endregion
 
@@ -2862,7 +2865,6 @@ Game_Player.prototype.locate = function (x, y) {
 
 //#endregion
 
-
 //-----------------------------------------------------------------------------
 // #region Real Time Event Syncing
 //
@@ -2884,6 +2886,8 @@ Game_Player.prototype.locate = function (x, y) {
 //
 
 // Switches
+
+// Self Switches
 
 // Variables
 
