@@ -752,7 +752,7 @@ BestWaifu.MZPeer.NetworkRouter.prototype.onHandshakeData = function(data) {
                     $gameNetwork.pushLog("Handling pending handshake: " + handshake_data.getUniqueId());
 
                     if (this.hasHandshake(handshake_data.getUniqueId()) 
-                        && this._handshakes[handshake_data.getUniqueId()].getField("status") === BestWaifu.MZPeer.NetworkHandshake.Statuses.PENDING_ACK) {
+                        && this._handshakes[handshake_data.getUniqueId()].getField("status") >= BestWaifu.MZPeer.NetworkHandshake.Statuses.PENDING_ACK) {
                         $gameNetwork.pushLog("Ignoring a duplicated pending handshake.");
                         return;
                     }
@@ -777,7 +777,6 @@ BestWaifu.MZPeer.NetworkRouter.prototype.onHandshakeData = function(data) {
                     handshake_data.setField("status", BestWaifu.MZPeer.NetworkHandshake.Statuses.RESOLVED);
 
                     this._handshakes[handshake_data.getUniqueId()] = handshake_data;
-                    this._handshakes[handshake_data.getUniqueId()].setField("status", BestWaifu.MZPeer.NetworkHandshake.Statuses.RESOLVED);
                     
                     // Send back the resolution confirmation to the owner
                     if (handshake_data.getField("owner") !== $gameNetwork.username) {
