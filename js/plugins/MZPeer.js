@@ -357,6 +357,23 @@ BestWaifu.MZPeer.NetworkHandshake.prototype.networkData = function () {
     return data;
 };
 
+/** Get the id as a unique id in the format {recipient}_{id}. */
+BestWaifu.MZPeer.NetworkHandshake.prototype.getUniqueId = function() {
+    if (this.getField("id", null) === null) throw new Error("Cannot create a unique id when id is empty.");
+    if (this.getField("recipient", null) === null) throw new Error("Cannot create a unique id when recipient is empty.");
+    return this.getField("recipient") + "_" + this.getField('id');
+};
+
+/** Get the handshake's actual id from a unique id. */
+BestWaifu.MZPeer.NetworkHandshake.prototype.getIdFromUnique = function(unique_id) {
+    return unique_id.split("_")[1];
+};
+
+/** Get the handshake's recipient from a unique id. */
+BestWaifu.MZPeer.NetworkHandshake.prototype.getRecipientFromUnique = function(unique_id) {
+    return unique_id.split("_")[0];
+};
+
 
 //#endregion
 
@@ -673,8 +690,11 @@ BestWaifu.MZPeer.NetworkRouter.prototype.onHostData = function(data) {
     }
 };
 
+/** Do we have a valid, not expired handshake with this id?  */
 BestWaifu.MZPeer.NetworkRouter.hasHandshake = function(id) {
-    return !!this._handshakes[id];
+    if (!this._handshakes[id]) return false;
+    if (this._handshakes[id].isExpired()) return false;
+    return true;
 };
 
 BestWaifu.MZPeer.NetworkRouter.getHandshake = function(id) {
@@ -711,26 +731,36 @@ BestWaifu.MZPeer.NetworkRouter.prototype.onHandshakeData = function(data) {
     for (const handshakeListener of this._handshakeListeners) {
         if (handshakeListener.id === handshake_id) {
             switch (handshake_data.getField("status", BestWaifu.MZPeer.NetworkHandshake.Statuses.UNRESOLVED)) {
-                
                 case BestWaifu.MZPeer.NetworkHandshake.Statuses.UNRESOLVED: {
-                    $gameNetwork.pushLog("Handling unresolved handshake: " + handshake_id);
-                    this._handshakes[handshake_id] = handshake_data;
+                    $gameNetwork.pushLog("Handling unresolved handshake: " + handshake_data.getUniqueId());
+
+                    if (this.hasHandshake(handshake_data.getUniqueId())) {
+                        $gameNetwork.pushLog("Ignoring a duplicated unresolved handshake.");
+                        return;
+                    }
 
                     handshake_data.setField("network_data", handshakeListener.unresolved(handshake_data.networkData()));
-                    
                     handshake_data.setField("status", BestWaifu.MZPeer.NetworkHandshake.Statuses.PENDING_ACK);
-                    this._handshakes[handshake_id].setField("status", BestWaifu.MZPeer.NetworkHandshake.Statuses.PENDING_ACK);
+                    
+                    this._handshakes[handshake_data.getUniqueId()] = handshake_data;
 
                     this.sendHandshake(handshake_data);
                     break;
                 }
 
                 case BestWaifu.MZPeer.NetworkHandshake.Statuses.PENDING_ACK: {
-                    $gameNetwork.pushLog("Handling pending handshake: " + handshake_id);
+                    $gameNetwork.pushLog("Handling pending handshake: " + handshake_data.getUniqueId());
+
+                    if (this.hasHandshake(handshake_data.getUniqueId()) 
+                        && this._handshakes[handshake_data.getUniqueId()].getField("status") === BestWaifu.MZPeer.NetworkHandshake.Statuses.PENDING_ACK) {
+                        $gameNetwork.pushLog("Ignoring a duplicated pending handshake.");
+                        return;
+                    }
 
                     handshake_data.setField("network_data", handshakeListener.pending(handshake_data.networkData()));
                     handshake_data.setField("status", BestWaifu.MZPeer.NetworkHandshake.Statuses.RESOLVED);
-                    this._handshakes[handshake_id].setField("status", BestWaifu.MZPeer.NetworkHandshake.Statuses.RESOLVED);
+
+                    this._handshakes[handshake_data.getUniqueId()].setField("status", BestWaifu.MZPeer.NetworkHandshake.Statuses.RESOLVED);
 
                     this.sendHandshake(handshake_data);
                     break;
@@ -738,13 +768,16 @@ BestWaifu.MZPeer.NetworkRouter.prototype.onHandshakeData = function(data) {
 
                 case BestWaifu.MZPeer.NetworkHandshake.Statuses.RESOLVED: {
                     if (handshake_data.getField("owner") === $gameNetwork.username) {
-                        $gameNetwork.pushLog("Handling resolved handshake: " + handshake_id);
+                        $gameNetwork.pushLog("Handling resolved handshake: " + handshake_data.getUniqueId());
                         handshakeListener.resolved(handshake_data.networkData());
                     } else {
                         console.warn("Ignoring a handshake we don't own.");
                     }
-                    this._handshakes[handshake_id] = handshake_data;
-                    this._handshakes[handshake_id].setField("status", BestWaifu.MZPeer.NetworkHandshake.Statuses.RESOLVED);
+
+                    handshake_data.setField("status", BestWaifu.MZPeer.NetworkHandshake.Statuses.RESOLVED);
+
+                    this._handshakes[handshake_data.getUniqueId()] = handshake_data;
+                    this._handshakes[handshake_data.getUniqueId()].setField("status", BestWaifu.MZPeer.NetworkHandshake.Statuses.RESOLVED);
                     
                     // Send back the resolution confirmation to the owner
                     if (handshake_data.getField("owner") !== $gameNetwork.username) {
