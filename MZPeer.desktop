@@ -1,0 +1,9 @@
+[Desktop Entry]
+Name=MZPeer
+Exec=env gamef="/media/cinnamon/Storage/SSD_WIN/Projects/RMMZProjects/MZPeer" /home/cinnamon/desktopapps/nwjs/nwjs/packagefiles/nwjsstart-cicpoffs.sh
+Type=Application
+Categories=Game
+StartupNotify=true
+MimeType=application/x-ms-dos-executable;application/x-wine-extension-msp;
+Icon=/media/cinnamon/Storage/SSD_WIN/Projects/RMMZProjects/MZPeer/icon/icon.png
+Terminal=true
