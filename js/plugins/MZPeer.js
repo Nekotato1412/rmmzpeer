@@ -2022,12 +2022,24 @@ Game_System.prototype.players = function () {
     return this._players;
 };
 
+/** Provides the number for the given username. */
 Game_System.prototype.numberForUser = function (username) {
     for (const N of Object.keys(this._players)) {
         if (this._players[N] == username) return N;
     }
     return -1;
 };
+
+/** Provides the username for the given number. */
+Game_System.prototype.userForNumber = function(playerNumber) {
+    return this._players[playerNumber];
+};
+
+/** Provides the actor associated with the given player's number. */
+Game_System.prototype.actorForNumber = function(playerNumber) {
+    return $gameParty.members()[playerNumber - 1] || null;
+};
+
 //#endregion
 
 //#region Common GUI Components
@@ -2191,6 +2203,66 @@ BestWaifu.MZPeer.Window_TextEdit.prototype.refresh = function () {
 //#endregion
 
 //#region Netplay Menus
+
+
+//#region Joined Player Display
+
+
+BestWaifu.MZPeer.Window_JoinedPlayerDisplay = function() {
+    this.initialize(...arguments);
+};
+
+BestWaifu.MZPeer.Window_JoinedPlayerDisplay.prototype = Object.create(Window_Selectable.prototype);
+BestWaifu.MZPeer.Window_JoinedPlayerDisplay.prototype.constructor = BestWaifu.MZPeer.Window_JoinedPlayerDisplay;
+
+BestWaifu.MZPeer.Window_JoinedPlayerDisplay.prototype.initialize = function(rect) {
+    Window_Selectable.prototype.initialize.call(this, rect);
+    this.deactivate();
+    this.deselect();
+    this.upArrowVisible = false;
+    this.downArrowVisible = false;
+    this.setBackgroundType(2);
+};
+
+BestWaifu.MZPeer.Window_JoinedPlayerDisplay.prototype.maxCols = function() {
+    return this.maxItems();
+};
+
+BestWaifu.MZPeer.Window_JoinedPlayerDisplay.prototype.updateArrows = function() {};
+
+BestWaifu.MZPeer.Window_JoinedPlayerDisplay.prototype.maxItems = function() {
+    return BestWaifu.MZPeer.maxPlayers;
+};
+
+BestWaifu.MZPeer.Window_JoinedPlayerDisplay.prototype.maxRows = function() {
+    return 1;
+};
+
+BestWaifu.MZPeer.Window_JoinedPlayerDisplay.prototype.itemHeight = function() {
+    return this.height;
+};
+
+BestWaifu.MZPeer.Window_JoinedPlayerDisplay.prototype.maxPageRows = function() {
+    return 1;
+};
+
+BestWaifu.MZPeer.Window_JoinedPlayerDisplay.prototype.drawItem = function(index) {
+    const rect = this.itemRect(index);
+    const playerNumber = index + 1;
+    const actor = $gameSystem.actorForNumber(playerNumber);
+    const user = $gameSystem.userForNumber(playerNumber) ?? ""
+    this.resetTextColor();
+    this.changePaintOpacity(user !== "");
+    this.drawText(`P${playerNumber}`, rect.x + this.padding, rect.y + this.padding, rect.width, "left");
+    if (!user) return;
+    if (!actor) return;
+    this.drawCharacter(actor.characterName(), actor.characterIndex(), rect.x + (rect.width / 2), rect.y + 32 + this.padding);
+    this.drawText(user, rect.x, rect.y + this.lineHeight(), rect.width, "center")
+};
+
+
+
+//#endregion
 
 //#region Pregame Lobby
 
@@ -2481,11 +2553,26 @@ BestWaifu.MZPeer.Scene_Map_createAllWindows = Scene_Map.prototype.createAllWindo
 Scene_Map.prototype.createAllWindows = function() {
     BestWaifu.MZPeer.Scene_Map_createAllWindows.call(this);
     this.createNetworkDebugConsoleWindow();
+    this.createJoinedPlayerWindow();
 };
 
 Scene_Map.prototype.createNetworkDebugConsoleWindow = function() {
     this._networkDebugConsoleWindow = new BestWaifu.MZPeer.Window_NetworkDataLog(this.networkDebugConsoleWindowRect());
     this.addWindow(this._networkDebugConsoleWindow);
+};
+
+Scene_Map.prototype.createJoinedPlayerWindow = function() {
+    this._joinedPlayerDisplay = new BestWaifu.MZPeer.Window_JoinedPlayerDisplay(this.joinedPlayerDisplayRect());
+    this.addWindow(this._joinedPlayerDisplay);
+    this._joinedPlayerDisplay.refresh();
+};
+
+Scene_Map.prototype.joinedPlayerDisplayRect = function() {
+    const wx = 0;
+    const wh = this.calcWindowHeight(2, true);
+    const wy = Graphics.boxHeight - wh;
+    const ww = Graphics.boxWidth;
+    return new Rectangle(wx, wy, ww, wh);
 };
 
 Scene_Map.prototype.networkDebugConsoleWindowRect = function() {
@@ -2984,12 +3071,12 @@ BestWaifu.MZPeer.Remote_Player.prototype.initialize = function (username) {
 };
 
 BestWaifu.MZPeer.Remote_Player.prototype.actor = function () {
-    const N = $gameSystem.numberForUser(this.username) - 1;
+    const N = $gameSystem.numberForUser(this.username);
     if (N < 0) {
         $gameNetwork.pushLog(`[ERROR] Cannot determine actor for ${this.username}`);
         return null;
     }
-    return $gameParty.members()[N] || null;
+    return $gameNetwork.actorForNumber(N);
 };
 
 BestWaifu.MZPeer.Remote_Player.prototype.refresh = function () {
@@ -3089,6 +3176,9 @@ Scene_Map.prototype.updateMain = function () {
     BestWaifu.MZPeer.Scene_Map_updateMain.call(this);
     for (const remotePlayer of $remotePlayers) {
         remotePlayer.update();
+    }
+    if (this._joinedPlayerDisplay) {
+        this._joinedPlayerDisplay.refresh();
     }
 };
 
@@ -3194,7 +3284,7 @@ BestWaifu.MZPeer.Game_Player_refresh = Game_Player.prototype.refresh;
 Game_Player.prototype.refresh = function () {
     if ($gameNetwork.side === BestWaifu.MZPeer.Sides.Guest) {
         const N = $gameSystem.numberForUser($gameNetwork.username);
-        const actor = $gameParty.members()[N - 1];
+        const actor = $gameSystem.actorForNumber(N);
         const characterName = actor ? actor.characterName() : "";
         const characterIndex = actor ? actor.characterIndex() : 0;
         this.setImage(characterName, characterIndex);
