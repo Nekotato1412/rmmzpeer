@@ -4687,10 +4687,46 @@ Scene_Battle.prototype.create = function () {
     }
 };
 
+BestWaifu.MZPeer.Window_PeerWaiting = function() {
+    this.initialize.apply(this, arguments);
+}
+
+BestWaifu.MZPeer.Window_PeerWaiting.prototype = Object.create(Window_Base.prototype);
+BestWaifu.MZPeer.Window_PeerWaiting.prototype.constructor = BestWaifu.MZPeer.Window_PeerWaiting;
+
+BestWaifu.MZPeer.Window_PeerWaiting.prototype.initialize = function () {
+    var width = 240;
+    var height = 36 + $gameSystem.windowPadding() * 2; // one line
+    var x = (Graphics.boxWidth - width) / 2;
+    var y = (Graphics.boxHeight - height) / 2;
+    Window_Base.prototype.initialize.call(this, new Rectangle(x, y, width, height));
+    this.openness = 0;
+    this.refresh();
+};
+
+BestWaifu.MZPeer.Window_PeerWaiting.prototype.refresh = function () {
+    this.contents.clear();
+    this.drawText("Waiting..", 0, 0, this.contentsWidth(), "center");
+};
+
+BestWaifu.MZPeer.Scene_Battle_createAllWindows = Scene_Battle.prototype.createAllWindows;
+Scene_Battle.prototype.createAllWindows = function () {
+    BestWaifu.MZPeer.Scene_Battle_createAllWindows.call(this);
+    this._peerWaitingWindow = new BestWaifu.MZPeer.Window_PeerWaiting();
+    this.addWindow(this._peerWaitingWindow);
+};
+
 BestWaifu.MZPeer.Scene_Battle_update = Scene_Battle.prototype.update;
 Scene_Battle.prototype.update = function () {
     BestWaifu.MZPeer.Scene_Battle_update.call(this);
     if ($gameNetwork.battleHosting) $gameNetwork.updateBattleSync();
+    var win = this._peerWaitingWindow;
+    if (!win) return;
+    if (BestWaifu.MZPeer.isWaitingOnRemoteInput()) {
+        if (!win.isOpen() && !win.isOpening()) win.open();
+    } else if (!win.isClosed() && !win.isClosing()) {
+        win.close();
+    }
 };
 
 BestWaifu.MZPeer.Scene_Battle_terminate = Scene_Battle.prototype.terminate;
