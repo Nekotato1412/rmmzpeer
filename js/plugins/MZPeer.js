@@ -4634,6 +4634,8 @@ BestWaifu.MZPeer.Scene_Battle_create = Scene_Battle.prototype.create;
 Scene_Battle.prototype.create = function () {
     BestWaifu.MZPeer.Scene_Battle_create.call(this);
     if ($gameNetwork.side === BestWaifu.MZPeer.Sides.Host && !$gameNetwork.battleMirror) {
+        // Prevents mid-battle joining
+        $gameNetwork.open = false;
         $gameNetwork.beginHostBattle();
     }
 };
@@ -4652,6 +4654,8 @@ Scene_Battle.prototype.terminate = function () {
     $gameNetwork.battleMirror = false;
     // Battle is over, so the out-of-battle actor sync can carry the final state to guests.
     if (wasHost) {
+        // Re-allow joining
+        $gameNetwork.open = true;
         for (const actor of $gameParty.members()) BestWaifu.MZPeer.markActorDirty(actor);
     }
 };
