@@ -30,6 +30,11 @@
  * @type number
  * @default 0
  * 
+ * @param Player Count Variable
+ * @desc The variable to store the player count.
+ * @type variable
+ * @default 0
+ * 
  * @param Player Left Variable
  * @desc The variable to store the player number that left.
  * @type variable
@@ -97,6 +102,8 @@ BestWaifu.MZPeer.PlayerJoinVar = parseInt(BestWaifu.MZPeer.params["Player Joined
 
 BestWaifu.MZPeer.PlayerLeaveCE = parseInt(BestWaifu.MZPeer.params["Player Leave Common Event"]) || 0;
 BestWaifu.MZPeer.PlayerLeaveVar = parseInt(BestWaifu.MZPeer.params["Player Left Variable"]) || 0;
+
+BestWaifu.MZPeer.PlayerCountVar = parseInt(BestWaifu.MZPeer.params["Player Count Variable"]) || 0;
 
 BestWaifu.MZPeer.shouldAutoCreateSession = BestWaifu.MZPeer.params["Auto Session Creation"] == "true";
 
@@ -4169,6 +4176,13 @@ Game_SelfSwitches.prototype.setValue = function (key, value) {
 BestWaifu.MZPeer.GameSync.register("self_switch", payload => {
     $gameSelfSwitches.setValue(payload.key, payload.value);
 });
+
+
+BestWaifu.MZPeer.Game_Variables_value = Game_Variables.prototype.value;
+Game_Variables.prototype.value = function(variableId) {
+    if (variableId == BestWaifu.MZPeer.PlayerCountVar) return $gameNetwork.playerCount();
+    return BestWaifu.MZPeer.Game_Variables_value.call(this, variableId);
+};
 
 // Variables
 BestWaifu.MZPeer.Game_Variables_setValue = Game_Variables.prototype.setValue;
