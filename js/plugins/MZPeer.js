@@ -89,7 +89,7 @@
  */
 var BestWaifu = BestWaifu || {};
 BestWaifu.MZPeer = BestWaifu.MZPeer || {};
-BestWaifu.MZPeer.Version = 1;
+BestWaifu.MZPeer.Version = 2;
 
 BestWaifu.MZPeer.params = PluginManager.parameters("MZPeer");
 
