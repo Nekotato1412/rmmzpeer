@@ -1299,6 +1299,7 @@ $allPlayers = [];
 // Contains remote player objects
 $remotePlayers = [];
 
+/** Completely reset the network. */
 $gameNetwork.reset = function () {
     $gameNetwork.peer = null; // Our Peer Object
     $gameNetwork.lobbyId = ""; // The current Lobby ID
@@ -2412,6 +2413,15 @@ BestWaifu.MZPeer.Scene_PreGameLobby.prototype.onDisconnect = function() {
     $gameNetwork.disconnectSession();
     this.fadeOutAll();
     SceneManager.goto(Scene_Title);
+};
+
+BestWaifu.MZPeer.Scene_Title_start = Scene_Title.prototype.start;
+Scene_Title.prototype.start = function() {
+    // Prevent maintaining a connection on the title screen (e.g. from Game Over or manual title returns)
+    if ($gameNetwork.isSessionReady()) {
+        $gameNetwork.disconnectSession();
+    }
+    BestWaifu.MZPeer.Scene_Title_start.call(this);
 };
 
 BestWaifu.MZPeer.Scene_PreGameLobby.prototype.onStart = function() {
