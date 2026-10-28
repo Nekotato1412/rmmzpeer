@@ -1,6 +1,9 @@
 # MZ Peer
 Peer to Peer Co-Op in RPG Maker MZ, powered by PeerJS!
 
+## IMPORTANT DISCLAIMER:
+This plugin is NOT ready for public use and I am aware I am an extremely sloppy user when it comes to git so I won't be accepting PRs. This repository is purely here to provide auto-update and document the instructions on using this plugin.
+
 ## Features
 - No server setup required
 - Support for private sessions
