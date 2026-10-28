@@ -4696,7 +4696,7 @@ BestWaifu.MZPeer.Window_PeerWaiting.prototype.constructor = BestWaifu.MZPeer.Win
 
 BestWaifu.MZPeer.Window_PeerWaiting.prototype.initialize = function () {
     var width = 240;
-    var height = 36 + $gameSystem.windowPadding() * 2; // one line
+    var height = 36 + $gameSystem.windowPadding() * 2;
     var x = (Graphics.boxWidth - width) / 2;
     var y = (Graphics.boxHeight - height) / 2;
     Window_Base.prototype.initialize.call(this, new Rectangle(x, y, width, height));
