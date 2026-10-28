@@ -15,6 +15,10 @@
  * @type text
  * @default Set Username
  * 
+ * @param Netplay Text
+ * @type text
+ * @default Multiplayer
+ * 
  * @param Player Join Common Event
  * @desc The common event to call on player join.
  * @type number
@@ -96,6 +100,7 @@ BestWaifu.MZPeer.params = PluginManager.parameters("MZPeer");
 BestWaifu.MZPeer.ENTER_ROOM_CODE = String(BestWaifu.MZPeer.params["Enter Room Code Text"] || "Enter Room Code");
 BestWaifu.MZPeer.DISCONNECT = String(BestWaifu.MZPeer.params["Disconnect Text"] || "Disconnect");
 BestWaifu.MZPeer.SET_USERNAME = String(BestWaifu.MZPeer.params["Set Username Text"] || "Set Username");
+BestWaifu.MZPeer.NETPLAY = String(BestWaifu.MZPeer.params["Netplay Text"] || "Multiplayer");
 
 BestWaifu.MZPeer.PlayerJoinCE = parseInt(BestWaifu.MZPeer.params["Player Join Common Event"]) || 0;
 BestWaifu.MZPeer.PlayerJoinVar = parseInt(BestWaifu.MZPeer.params["Player Joined Variable"]) || 0;
@@ -2276,6 +2281,29 @@ BestWaifu.MZPeer.Window_TextEdit.prototype.refresh = function () {
 
 //#region Netplay Menus
 
+//#region Title Screen Edit
+
+Window_TitleCommand.prototype.makeCommandList = function() {
+    const continueEnabled = this.isContinueEnabled();
+    this.addCommand(TextManager.newGame, "newGame");
+    this.addCommand(BestWaifu.MZPeer.NETPLAY, "netplay")
+    this.addCommand(TextManager.continue_, "continue", continueEnabled);
+    this.addCommand(TextManager.options, "options");
+};
+
+BestWaifu.MZPeer.Scene_Title_createCommandWindow = Scene_Title.prototype.createCommandWindow;
+Scene_Title.prototype.createCommandWindow = function() {
+    BestWaifu.MZPeer.Scene_Title_createCommandWindow.call(this);
+    this._commandWindow.setHandler("netplay", this.commandNetplay.bind(this));
+};
+
+Scene_Title.prototype.commandNetplay = function() {
+    this._commandWindow.close();
+    SceneManager.push(BestWaifu.MZPeer.Scene_NetplayOptions);
+};
+
+
+//#endregion
 
 //#region Joined Player Display
 
@@ -2712,7 +2740,7 @@ Window_Options.prototype.makeCommandList = function () {
 };
 
 Window_Options.prototype.addNetworkOptions = function () {
-    this.addCommand("Netplay", "netplay");
+    this.addCommand(BestWaifu.MZPeer.NETPLAY, "netplay");
 };
 
 Window_Options.prototype.isNetworkSymbol = function (symbol) {
