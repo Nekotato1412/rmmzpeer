@@ -34,7 +34,41 @@
  * @desc The variable to store the player number that left.
  * @type variable
  * @default 0
+ * 
+ * @param Auto Spawn Players
+ * @desc Spawn players at the host's position as soon as they join. Turn off to use the plugin commands.
+ * @type boolean
+ * @default true
  *
+ * @command spawnLastPlayer
+ * @text Spawn Last Player
+ * @desc Host only. Spawns the newest player waiting to enter.
+ * @arg x
+ * @type number
+ * @arg y
+ * @type number
+ *
+ * @command spawnAllPlayers
+ * @text Spawn All Players
+ * @arg x
+ * @type number
+ * @arg y
+ * @type number
+ *
+ * @command storePlayerNumber
+ * @text Store Local Player Number
+ * @desc Each machine stores its own number. The variable is never synced.
+ * @arg variable
+ * @type variable
+ *
+ * @command setMoveRoutePlayer
+ * @text Set Move Route Player
+ * @desc Makes "Player" in move routes mean this player number. 0 resets it.
+ * @arg player
+ * @type number
+ * @default 0
+ * 
+ * 
  * @help
  * 
  */
@@ -848,6 +882,9 @@ BestWaifu.MZPeer.NetworkRouter.prototype.purgePeer = function(username) {
         if (handshake.getField("owner") === username) handshake.setField("status", BestWaifu.MZPeer.NetworkHandshake.Statuses.PURGED);
         if (handshake.getField("recipient") === username) handshake.setField("status", BestWaifu.MZPeer.NetworkHandshake.Statuses.PURGED);
     }
+    for (const packet_id of Object.keys(this._reliablePackets)) {
+        if (packet_id.startsWith(username + "_")) delete this._reliablePackets[packet_id];
+    }
 };
 
 /** Data recieved from the host. */
@@ -1171,6 +1208,23 @@ BestWaifu.MZPeer.NetworkRouter.prototype.sendToGuests = function(network_data) {
     const payload = network_data.data();
     for (const dataConnection of $gameNetwork.peerConnections) {
         if (!dataConnection.open) continue;
+        try {
+            dataConnection.send(payload);
+        } catch (e) {
+            console.error("Failed to send to guest:", e);
+        }
+    }
+};
+
+/** Send to every guest except the one that originated the data. */
+BestWaifu.MZPeer.NetworkRouter.prototype.sendToGuestsExcept = function (excluded_username, network_data) {
+    if ($gameNetwork.side !== BestWaifu.MZPeer.Sides.Host) {
+        throw new Error("Only host can send data to guests.");
+    }
+    const payload = network_data.data();
+    for (const dataConnection of $gameNetwork.peerConnections) {
+        if (!dataConnection.open) continue;
+        if (dataConnection.metadata?.username === excluded_username) continue;
         try {
             dataConnection.send(payload);
         } catch (e) {
@@ -1910,8 +1964,7 @@ $gameNetwork.router.addHandshakeListener("init_final", data => {
     // Designate the player as spawnable/creatable
     $gameNetwork.spawnablePlayers.push(data.username);
 
-    // DEBUG ONLY: Spawn the last player
-    $gameNetwork.spawnLastPlayer($gamePlayer.x, $gamePlayer.y);
+    if (BestWaifu.MZPeer.AutoSpawn) $gameNetwork.spawnLastPlayer($gamePlayer.x, $gamePlayer.y);
 
     return data;
 }, data => {
@@ -3076,7 +3129,7 @@ BestWaifu.MZPeer.Remote_Player.prototype.actor = function () {
         $gameNetwork.pushLog(`[ERROR] Cannot determine actor for ${this.username}`);
         return null;
     }
-    return $gameNetwork.actorForNumber(N);
+    return $gameSystem.actorForNumber(N);
 };
 
 BestWaifu.MZPeer.Remote_Player.prototype.refresh = function () {
@@ -3347,56 +3400,402 @@ Game_Player.prototype.locate = function (x, y) {
 
 //#endregion
 
+// #region Game Sync Infrastructure
+
+/** Define a property that JsonEx will not serialize into save files. */
+BestWaifu.MZPeer.defineHiddenProperty = function (object, name, value) {
+    Object.defineProperty(object, name, {
+        value: value,
+        writable: true,
+        enumerable: false,
+        configurable: true
+    });
+};
+
+/** Keep only the newest nodes. Prevents the graph from growing forever. */
+BestWaifu.MZPeer.NetworkGraph.prototype.trim = function (maxNodes) {
+    if (this._nodes.length > maxNodes) {
+        this._nodes.splice(0, this._nodes.length - maxNodes);
+    }
+};
+
+/**
+ * The graph holds prototype-based objects JsonEx cannot restore, so it must
+ * never be written to a save file. Overrides the earlier definition.
+ */
+Game_Player.prototype.createMovementGraph = function () {
+    BestWaifu.MZPeer.defineHiddenProperty(this, "movementGraph", new BestWaifu.MZPeer.NetworkGraph());
+};
+
+BestWaifu.MZPeer.isMapActive = function () {
+    return SceneManager._scene instanceof Scene_Map && SceneManager._scene.isActive();
+};
+
+BestWaifu.MZPeer.AutoSpawn = String(BestWaifu.MZPeer.params["Auto Spawn Players"] || "true") === "true";
+
+//#region Sync Data Types
+
+/** Generic absolute-state change of the game. See BestWaifu.MZPeer.GameSync. */
+BestWaifu.MZPeer.SyncGameData = function () {
+    this.initialize(...arguments);
+};
+
+BestWaifu.MZPeer.SyncGameData.prototype = Object.create(BestWaifu.MZPeer.NetworkData.prototype);
+BestWaifu.MZPeer.SyncGameData.prototype.constructor = BestWaifu.MZPeer.SyncGameData;
+BestWaifu.MZPeer.SyncGameData.prototype.initialize = function () {
+    BestWaifu.MZPeer.NetworkData.prototype.initialize.call(this, "sync_game_data");
+    this.addField(BestWaifu.MZPeer.NetworkData.DataTypes.STRING, "kind");
+    this.addField(BestWaifu.MZPeer.NetworkData.DataTypes.STRING, "key");
+    this.addField(BestWaifu.MZPeer.NetworkData.DataTypes.OBJECT, "payload");
+};
+
+/** Used for syncing an event being locked (talked to) or unlocked. */
+BestWaifu.MZPeer.SyncEventLock = function () {
+    this.initialize(...arguments);
+};
+
+BestWaifu.MZPeer.SyncEventLock.prototype = Object.create(BestWaifu.MZPeer.NetworkData.prototype);
+BestWaifu.MZPeer.SyncEventLock.prototype.constructor = BestWaifu.MZPeer.SyncEventLock;
+BestWaifu.MZPeer.SyncEventLock.prototype.initialize = function () {
+    BestWaifu.MZPeer.NetworkData.prototype.initialize.call(this, "sync_event_lock");
+    this.addField(BestWaifu.MZPeer.NetworkData.DataTypes.INT, "map_id");
+    this.addField(BestWaifu.MZPeer.NetworkData.DataTypes.INT, "event_id");
+    this.addField(BestWaifu.MZPeer.NetworkData.DataTypes.INT, "locked");
+    this.addField(BestWaifu.MZPeer.NetworkData.DataTypes.INT, "direction");
+};
+
+/** Host -> Guest. One ordered, reliable event of the battle stream. tick is the order. */
+BestWaifu.MZPeer.SyncBattleEvent = function () {
+    this.initialize(...arguments);
+};
+
+BestWaifu.MZPeer.SyncBattleEvent.prototype = Object.create(BestWaifu.MZPeer.NetworkData.prototype);
+BestWaifu.MZPeer.SyncBattleEvent.prototype.constructor = BestWaifu.MZPeer.SyncBattleEvent;
+BestWaifu.MZPeer.SyncBattleEvent.prototype.initialize = function () {
+    BestWaifu.MZPeer.NetworkData.prototype.initialize.call(this, "sync_battle_event");
+    this.addField(BestWaifu.MZPeer.NetworkData.DataTypes.STRING, "kind");
+    this.addField(BestWaifu.MZPeer.NetworkData.DataTypes.INT, "battle");
+    this.addField(BestWaifu.MZPeer.NetworkData.DataTypes.OBJECT, "payload");
+};
+
+/** Host -> Guest. Unreliable snapshot of every battler. Newest tick wins. */
+BestWaifu.MZPeer.SyncBattleState = function () {
+    this.initialize(...arguments);
+};
+
+BestWaifu.MZPeer.SyncBattleState.prototype = Object.create(BestWaifu.MZPeer.NetworkData.prototype);
+BestWaifu.MZPeer.SyncBattleState.prototype.constructor = BestWaifu.MZPeer.SyncBattleState;
+BestWaifu.MZPeer.SyncBattleState.prototype.initialize = function () {
+    BestWaifu.MZPeer.NetworkData.prototype.initialize.call(this, "sync_battle_state");
+    this.addField(BestWaifu.MZPeer.NetworkData.DataTypes.OBJECT, "payload");
+};
+
+/** Guest -> Host. The actions a guest chose for the actor they own. */
+BestWaifu.MZPeer.SyncBattleCommand = function () {
+    this.initialize(...arguments);
+};
+
+BestWaifu.MZPeer.SyncBattleCommand.prototype = Object.create(BestWaifu.MZPeer.NetworkData.prototype);
+BestWaifu.MZPeer.SyncBattleCommand.prototype.constructor = BestWaifu.MZPeer.SyncBattleCommand;
+BestWaifu.MZPeer.SyncBattleCommand.prototype.initialize = function () {
+    BestWaifu.MZPeer.NetworkData.prototype.initialize.call(this, "sync_battle_command");
+    this.addField(BestWaifu.MZPeer.NetworkData.DataTypes.INT, "actor_id");
+    this.addField(BestWaifu.MZPeer.NetworkData.DataTypes.INT, "serial");
+    this.addField(BestWaifu.MZPeer.NetworkData.DataTypes.ARRAY, "actions");
+};
+
+/** Event sync data carries the map it belongs to so late packets can be rejected. */
+for (const SyncClass of [
+    BestWaifu.MZPeer.SyncEventMovement,
+    BestWaifu.MZPeer.SyncEventOrientation,
+    BestWaifu.MZPeer.SyncEventLocate
+]) {
+    const baseInitialize = SyncClass.prototype.initialize;
+    SyncClass.prototype.initialize = function () {
+        baseInitialize.apply(this, arguments);
+        this.addField(BestWaifu.MZPeer.NetworkData.DataTypes.INT, "map_id");
+    };
+}
+
+//#endregion
+
+//#region Sync State and Helpers
+
+$gameNetwork.resetBattleSync = function () {
+    this.battleId = 0;             // Host: id of the hosted battle. Guest: id of the mirrored battle.
+    this.battleOrder = 0;          // Host: last order number sent on the battle stream.
+    this.battleExpected = 1;       // Guest: next order number to process.
+    this.battleBuffer = {};        // Guest: out of order events waiting on earlier ones.
+    this.battleInbox = [];         // Guest: ordered events waiting for the scene to be ready.
+    this.battleHosting = false;    // Host: are we forwarding a battle to guests?
+    this.battleMirror = false;     // Guest: are we mirroring the host's battle?
+    this.battleInputSerial = 0;    // Host: counts actor inputs. Guest: serial of the input in progress.
+    this.battleInputHandled = 0;   // Guest: newest input serial we have opened.
+    this.battleSnapshotTick = 0;   // Guest: newest snapshot applied.
+    this.battleSnapshotDirty = false;
+    this.battleSnapshotTimer = 0;
+};
+
+$gameNetwork.resetGameSync = function () {
+    this.syncSeq = 0;              // Our own ever increasing tick for outgoing sync data
+    this.syncQueue = {};           // key -> { kind, builder }, coalesced and flushed once per frame
+    this.syncLastTicks = {};       // "sender:key" -> newest tick seen
+    this.applyingRemote = false;   // True while applying data from the network. Hooks must not re-send.
+    this.mapQueue = [];            // Functions waiting for the map to be active
+    this.moveRoutePlayer = 0;      // Which player "Player" means in a move route. 0 is the default.
+    this.battleResultCallback = null;
+    this.resetBattleSync();
+};
+
+BestWaifu.MZPeer.gameNetwork_reset = $gameNetwork.reset;
+$gameNetwork.reset = function () {
+    BestWaifu.MZPeer.gameNetwork_reset.call(this);
+    this.resetGameSync();
+};
+$gameNetwork.resetGameSync();
+
+/** Is there a live connection we can actually send through? */
+$gameNetwork.isSessionReady = function () {
+    if (this.side === BestWaifu.MZPeer.Sides.Host) {
+        return this.peerConnections.some(c => c.open);
+    }
+    if (this.side === BestWaifu.MZPeer.Sides.Guest) {
+        return !!this.hostConnection && this.hostConnection.open && this.hostUsername !== "";
+    }
+    return false;
+};
+
+/** Run a function while hooks know the change came from the network. */
+$gameNetwork.applyRemote = function (callback) {
+    const previous = this.applyingRemote;
+    this.applyingRemote = true;
+    try {
+        callback();
+    } catch (e) {
+        console.error(e);
+    } finally {
+        this.applyingRemote = previous;
+    }
+};
+
+$gameNetwork.canSyncGameData = function () {
+    return this.side !== BestWaifu.MZPeer.Sides.Local && !this.applyingRemote && this.isSessionReady();
+};
+
+/** Run now if the map is active, otherwise as soon as it is. */
+$gameNetwork.whenOnMap = function (callback) {
+    if (BestWaifu.MZPeer.isMapActive() && !$gamePlayer.isTransferring()) {
+        callback();
+    } else {
+        this.mapQueue.push(callback);
+    }
+};
+
+$gameNetwork.drainMapQueue = function () {
+    while (this.mapQueue.length > 0 && BestWaifu.MZPeer.isMapActive() && !$gamePlayer.isTransferring()) {
+        const callback = this.mapQueue.shift();
+        try {
+            callback();
+        } catch (e) {
+            console.error(e);
+        }
+    }
+};
+
+/** Send reliably to the other side (guests if host, host if guest). */
+$gameNetwork.sendReliableCommon = function (network_data, uniqueId) {
+    if (this.side === BestWaifu.MZPeer.Sides.Host) {
+        this.router.sendReliableToGuests(network_data, uniqueId);
+    } else if (this.side === BestWaifu.MZPeer.Sides.Guest) {
+        this.router.sendReliable(this.hostUsername, network_data, uniqueId);
+    }
+};
+
+/** Send a game data change right now. Prefer queueSync for things that can change many times per frame. */
+$gameNetwork.sendGameData = function (key, kind, payload) {
+    if (!this.isSessionReady()) return;
+    const game_sync = new BestWaifu.MZPeer.SyncGameData();
+    this.syncSeq++;
+    game_sync.setField("tick", this.syncSeq);
+    game_sync.setField("kind", kind);
+    game_sync.setField("key", key);
+    game_sync.setField("payload", payload);
+    this.sendReliableCommon(game_sync, `${this.username}-${this.syncSeq}`);
+};
+
+/**
+ * Ask for a game data change to be sent at the end of this frame. Queueing the
+ * same key twice in a frame sends only the latest value, because the builder
+ * is run when the queue is flushed.
+ * @param {string} key Unique per thing being synced, e.g. "variable:12"
+ * @param {string} kind Name of the BestWaifu.MZPeer.GameSync handler
+ * @param {function} builder Returns the payload object
+ */
+$gameNetwork.queueSync = function (key, kind, builder) {
+    if (!this.canSyncGameData()) return;
+    this.syncQueue[key] = { kind, builder };
+};
+
+$gameNetwork.flushSync = function () {
+    const keys = Object.keys(this.syncQueue);
+    if (keys.length === 0) return;
+    if (!this.isSessionReady()) {
+        this.syncQueue = {};
+        return;
+    }
+    for (const key of keys) {
+        const entry = this.syncQueue[key];
+        delete this.syncQueue[key];
+        let payload = null;
+        try {
+            payload = entry.builder();
+        } catch (e) {
+            console.error(e);
+        }
+        if (payload) this.sendGameData(key, entry.kind, payload);
+    }
+};
+
+/** Handlers for "sync_game_data" keyed by kind. Each receives the payload. */
+BestWaifu.MZPeer.GameSync = { handlers: {} };
+
+BestWaifu.MZPeer.GameSync.register = function (kind, handler) {
+    this.handlers[kind] = handler;
+};
+
+BestWaifu.MZPeer.GameSync.receive = function (game_sync) {
+    if ($gameNetwork.side === BestWaifu.MZPeer.Sides.Local) return;
+
+    const kind = game_sync.getField("kind", "");
+    const key = game_sync.getField("key", "");
+    const tick = game_sync.getField("tick", 0);
+    const payload = game_sync.getField("payload", {});
+    const handler = this.handlers[kind];
+    if (!handler) {
+        console.warn("Unhandled game sync kind:", kind);
+        return;
+    }
+
+    // Retried reliable packets can arrive late. Drop anything older than what we already have.
+    const tickKey = game_sync.username() + ":" + key;
+    const lastTick = $gameNetwork.syncLastTicks[tickKey];
+    if (lastTick !== undefined && tick < lastTick) {
+        $gameNetwork.pushLog("Dropping stale game sync: " + key);
+        return;
+    }
+    $gameNetwork.syncLastTicks[tickKey] = tick;
+
+    $gameNetwork.applyRemote(() => handler(payload));
+
+    // The host puts everything in one order and tells everyone, including the originator.
+    if ($gameNetwork.side === BestWaifu.MZPeer.Sides.Host) {
+        $gameNetwork.sendGameData(key, kind, payload);
+    }
+};
+
+$gameNetwork.router.addNetworkDataListener("sync_game_data", BestWaifu.MZPeer.Sides.Common, data => {
+    const game_sync = new BestWaifu.MZPeer.SyncGameData();
+    game_sync.fromData(data);
+    BestWaifu.MZPeer.GameSync.receive(game_sync);
+});
+
+/** Once per frame: send queued data and run anything waiting on the network. */
+BestWaifu.MZPeer.Scene_Base_update_sync = Scene_Base.prototype.update;
+Scene_Base.prototype.update = function () {
+    BestWaifu.MZPeer.Scene_Base_update_sync.call(this);
+    $gameNetwork.flushSync();
+    $gameNetwork.processBattleInbox();
+};
+
+BestWaifu.MZPeer.Scene_Map_updateMain_sync = Scene_Map.prototype.updateMain;
+Scene_Map.prototype.updateMain = function () {
+    BestWaifu.MZPeer.Scene_Map_updateMain_sync.call(this);
+    $gameNetwork.drainMapQueue();
+    if ($gameNetwork.side === BestWaifu.MZPeer.Sides.Host && Graphics.frameCount % 30 === 0) {
+        $gameMap.syncEventOrientations();
+    }
+};
+
+//#endregion
+
+// #endregion
+
 //-----------------------------------------------------------------------------
 // #region Real Time Event Syncing
 //
+// The host is the authority over events. Guests never move events on their
+// own; they only mirror what the host sends.
+
+BestWaifu.MZPeer.findEvent = function (sync_data) {
+    if (sync_data.getField("map_id", 0) !== $gameMap.mapId()) return null;
+    const event = $gameMap.event(sync_data.getField("event_id", 0));
+    if (!event) return null;
+    if (!event.movementGraph) event.createNetworkState();
+    return event;
+};
+
 BestWaifu.MZPeer.Game_Event_initialize = Game_Event.prototype.initialize;
-Game_Event.prototype.initialize = function(mapId, eventId) {
-    this.movementGraph = new BestWaifu.MZPeer.NetworkGraph();
-    this.movementGraph.onApply = this.onMovementApply.bind(this);
-    this._remoteMoveQueue = [];
-    this._remoteLocateQueue = [];
+Game_Event.prototype.initialize = function (mapId, eventId) {
     this._locatingByNetwork = false;
     this._movingByNetwork = false;
+    this._netReady = false;
+    this._netOrientationDirty = false;
+    this.createNetworkState();
     BestWaifu.MZPeer.Game_Event_initialize.call(this, mapId, eventId);
-}
+    this._netReady = true;
+};
+
+/** Network state is hidden so it is never written to a save file. */
+Game_Event.prototype.createNetworkState = function () {
+    BestWaifu.MZPeer.defineHiddenProperty(this, "movementGraph", new BestWaifu.MZPeer.NetworkGraph());
+    this.movementGraph.onApply = this.onMovementApply.bind(this);
+    BestWaifu.MZPeer.defineHiddenProperty(this, "_remoteMoveQueue", []);
+    BestWaifu.MZPeer.defineHiddenProperty(this, "_remoteLocateQueue", []);
+};
+
+/** Guests only do what the network tells them to. */
+Game_Event.prototype.isNetworkControlled = function () {
+    return this._netReady && $gameNetwork.side === BestWaifu.MZPeer.Sides.Guest;
+};
+
+Game_Event.prototype.canSendNetworkData = function () {
+    return this._netReady && $gameNetwork.side === BestWaifu.MZPeer.Sides.Host && $gameNetwork.isSessionReady();
+};
 
 Game_Event.prototype.onMovementApply = function (data) {
-    /* if (!data || !data["type"]) {
+    if (!data || !data["type"]) {
         throw new Error("Applied data cannot be undefined or null.");
     };
     switch (data.type) {
         case "sync_event_movement": {
-            const move_sync_data = new BestWaifu.MZPeer.SyncPlayerMovement();
+            const move_sync_data = new BestWaifu.MZPeer.SyncEventMovement();
             move_sync_data.fromData(data);
             this._remoteMoveQueue.push(move_sync_data);
             break;
         }
 
         case "sync_event_locate": {
-            const locate_sync_data = new BestWaifu.MZPeer.SyncPlayerLocate();
+            const locate_sync_data = new BestWaifu.MZPeer.SyncEventLocate();
             locate_sync_data.fromData(data);
             this._remoteLocateQueue.push(locate_sync_data);
             break;
         }
-    } */
+    }
 };
 
-Game_Event.prototype.discardRemoteActions = function() {
+Game_Event.prototype.discardRemoteActions = function () {
     this._remoteLocateQueue = [];
     this._remoteMoveQueue = [];
 };
 
-Game_Event.prototype.locateByNetwork = function() {
+Game_Event.prototype.locateByNetwork = function () {
     if (!this._remoteLocateQueue.length) return;
-     const queueSize = this._remoteLocateQueue.length;
 
-    // If behind too far, discard and reorient.
-    if (queueSize >= 10) {
-        /* $gameNetwork.pushLog(`${this.username} is too far behind. Forcing reorientation.`);
-        const reorient_request = new BestWaifu.MZPeer.NetworkRequest(BestWaifu.MZPeer.NetworkRequest.Codes.REORIENT);
-        $gameNetwork.router.sendData(reorient_request, BestWaifu.MZPeer.Sides.Common);
-        this.discardRemoteActions(); */
+    // If behind too far, discard and ask the host for the truth.
+    if (this._remoteLocateQueue.length >= 10) {
+        $gameNetwork.pushLog(`EV${this._eventId} is too far behind. Forcing reorientation.`);
+        this.discardRemoteActions();
+        $gameMap.resyncRemotePlayers();
         return;
     }
 
@@ -3409,18 +3808,16 @@ Game_Event.prototype.moveByNetwork = function () {
     if (!this._remoteMoveQueue.length) return;
     const queueSize = this._remoteMoveQueue.length;
 
-    // If behind too far, discard and reorient.
-    /* if (queueSize >= 10) {
+    // If behind too far, discard and ask the host for the truth.
+    if (queueSize >= 10) {
         $gameNetwork.pushLog(`EV${this._eventId} is too far behind. Forcing reorientation.`);
-        const reorient_request = new BestWaifu.MZPeer.NetworkRequest(BestWaifu.MZPeer.NetworkRequest.Codes.REORIENT);
-        $gameNetwork.router.sendData(reorient_request, BestWaifu.MZPeer.Sides.Common);
         this.discardRemoteActions();
+        $gameMap.resyncRemotePlayers();
         return;
-    } */
+    }
 
     // Check if behind threshold and adjust speed accordingly
     if (queueSize >= 5) {
-        $gameNetwork.pushLog(`EV${this._eventId} is too far behind. Speeding up..`);
         this.setMoveSpeed(5);
     }
 
@@ -3435,48 +3832,239 @@ Game_Event.prototype.moveByNetwork = function () {
 };
 
 BestWaifu.MZPeer.Game_Event_update = Game_Event.prototype.update;
-Game_Event.prototype.update = function() {
+Game_Event.prototype.update = function () {
+    if (!this.movementGraph) this.createNetworkState();
     this.moveByNetwork();
     this.locateByNetwork();
     BestWaifu.MZPeer.Game_Event_update.call(this);
 };
 
+Game_Event.prototype.sendLocateData = function () {
+    if (!this.canSendNetworkData()) return;
+    const locate_sync = new BestWaifu.MZPeer.SyncEventLocate();
+    locate_sync.setField("map_id", $gameMap.mapId());
+    locate_sync.setField("event_id", this.eventId());
+    locate_sync.setField("x", this.x);
+    locate_sync.setField("y", this.y);
+    this.movementGraph.tick();
+    locate_sync.setField("tick", this.movementGraph.getField("tick", 0));
+    $gameNetwork.sendData(locate_sync, BestWaifu.MZPeer.Sides.Guest);
+};
 
-// TODO: Sync locate and hard orientation
+Game_Event.prototype.sendMovementData = function (direction) {
+    if (!this.canSendNetworkData() || !this.isMovementSucceeded()) return;
+    const move_sync = new BestWaifu.MZPeer.SyncEventMovement();
+    move_sync.setField("map_id", $gameMap.mapId());
+    move_sync.setField("event_id", this.eventId());
+    move_sync.setField("direction", direction);
+    move_sync.setField("speed", this.realMoveSpeed());
+    this.movementGraph.tick();
+    move_sync.setField("tick", this.movementGraph.getField("tick", 0));
+    $gameNetwork.sendData(move_sync, BestWaifu.MZPeer.Sides.Guest);
+};
+
+/** Hard sync of position and direction. Sent to one guest if a recipient is given. */
+Game_Event.prototype.sendOrientationData = function (recipient = "") {
+    if (!this.canSendNetworkData()) return;
+    const orientation_sync = new BestWaifu.MZPeer.SyncEventOrientation();
+    orientation_sync.setField("map_id", $gameMap.mapId());
+    orientation_sync.setField("event_id", this.eventId());
+    orientation_sync.setField("x", this.x);
+    orientation_sync.setField("y", this.y);
+    orientation_sync.setField("direction", this.direction());
+    if (recipient) {
+        $gameNetwork.sendResponse(recipient, orientation_sync);
+    } else {
+        $gameNetwork.sendData(orientation_sync, BestWaifu.MZPeer.Sides.Guest);
+    }
+};
+
 BestWaifu.MZPeer.Game_Event_locate = Game_Event.prototype.locate;
-Game_Event.prototype.locate = function(x, y) {
-    if ($gameNetwork.side === BestWaifu.MZPeer.Sides.Guest && !this._locatingByNetwork) return;
-    BestWaifu.MZPeer.Game_Event_locate.call(this, x, y);
+Game_Event.prototype.locate = function (x, y) {
+    const byNetwork = this._locatingByNetwork;
     this._locatingByNetwork = false;
-    if ($gameNetwork.side === BestWaifu.MZPeer.Sides.Host) {
-        // Send packets to guests
-    }
+    if (this.isNetworkControlled() && !byNetwork) return;
+    BestWaifu.MZPeer.Game_Event_locate.call(this, x, y);
+    this._netOrientationDirty = true;
+    if (!byNetwork) this.sendLocateData();
 };
 
-// TODO: Sync Move straight
 BestWaifu.MZPeer.Game_Event_moveStraight = Game_Event.prototype.moveStraight;
-Game_Event.prototype.moveStraight = function(direction) {
-    if ($gameNetwork.side === BestWaifu.MZPeer.Sides.Guest && !this._movingByNetwork) return;
-    BestWaifu.MZPeer.Game_Event_moveStraight.call(this, direction);
+Game_Event.prototype.moveStraight = function (direction) {
+    const byNetwork = this._movingByNetwork;
     this._movingByNetwork = false;
-    if ($gameNetwork.side === BestWaifu.MZPeer.Sides.Host) {
-        // Send packets to guests
+    if (this.isNetworkControlled() && !byNetwork) return;
+    BestWaifu.MZPeer.Game_Event_moveStraight.call(this, direction);
+    this._netOrientationDirty = true;
+    if (!byNetwork) this.sendMovementData(direction);
+};
+
+BestWaifu.MZPeer.Game_Event_setDirection = Game_Event.prototype.setDirection;
+Game_Event.prototype.setDirection = function (d) {
+    BestWaifu.MZPeer.Game_Event_setDirection.call(this, d);
+    this._netOrientationDirty = true;
+};
+
+/** Lock (an event stops to be talked to). Synced on the common side. */
+Game_Event.prototype.sendLockData = function (locked) {
+    if (!this._netReady || !$gameNetwork.isSessionReady()) return;
+    const lock_sync = new BestWaifu.MZPeer.SyncEventLock();
+    lock_sync.setField("map_id", $gameMap.mapId());
+    lock_sync.setField("event_id", this.eventId());
+    lock_sync.setField("locked", locked ? 1 : 0);
+    lock_sync.setField("direction", this.direction());
+    $gameNetwork.sendData(lock_sync, BestWaifu.MZPeer.Sides.Common);
+};
+
+/** Apply a lock or unlock from the network without turning toward the local player. */
+Game_Event.prototype.applyNetworkLock = function (locked, direction) {
+    if (locked) {
+        if (!this._locked) {
+            this._prelockDirection = this.direction();
+            this._locked = true;
+        }
+        this.setDirection(direction);
+    } else if (this._locked) {
+        this._locked = false;
+        this.setDirection(this._prelockDirection);
     }
 };
 
-// TODO: Sync Event Lock and Unlock
 BestWaifu.MZPeer.Game_Event_lock = Game_Event.prototype.lock;
-Game_Event.prototype.lock = function() {
+Game_Event.prototype.lock = function () {
+    const wasLocked = this._locked;
     BestWaifu.MZPeer.Game_Event_lock.call(this);
-    // Send packet on common side
+    if (!wasLocked && this._locked) this.sendLockData(true);
 };
 
 BestWaifu.MZPeer.Game_Event_unlock = Game_Event.prototype.unlock;
-Game_Event.prototype.unlock = function() {
+Game_Event.prototype.unlock = function () {
+    const wasLocked = this._locked;
     BestWaifu.MZPeer.Game_Event_unlock.call(this);
-    // Send packet on common side
+    if (wasLocked && !this._locked) this.sendLockData(false);
 };
 
+/** Events that settled somewhere get a hard sync so small drift never builds up. */
+Game_Map.prototype.syncEventOrientations = function () {
+    if ($gameNetwork.side !== BestWaifu.MZPeer.Sides.Host || !$gameNetwork.isSessionReady()) return;
+    for (const event of this.events()) {
+        if (!event._netOrientationDirty || event.isMoving()) continue;
+        event._netOrientationDirty = false;
+        event.sendOrientationData();
+    }
+};
+
+// Erasing an event is temporary state that only the map holds, so sync it as game data.
+BestWaifu.MZPeer.Game_Event_erase = Game_Event.prototype.erase;
+Game_Event.prototype.erase = function () {
+    const wasErased = this._erased;
+    BestWaifu.MZPeer.Game_Event_erase.call(this);
+    if (!wasErased) {
+        const mapId = this._mapId;
+        const eventId = this._eventId;
+        $gameNetwork.queueSync(`erase:${mapId}:${eventId}`, "erase_event", () => ({ mapId, eventId }));
+    }
+};
+
+BestWaifu.MZPeer.GameSync.register("erase_event", payload => {
+    if (payload.mapId !== $gameMap.mapId()) return;
+    const event = $gameMap.event(payload.eventId);
+    if (event) event.erase();
+});
+
+//#region Event Data Listeners
+
+$gameNetwork.router.addNetworkDataListener("sync_event_movement", BestWaifu.MZPeer.Sides.Guest, data => {
+    if (!BestWaifu.MZPeer.isMapActive()) return;
+    const move_sync = new BestWaifu.MZPeer.SyncEventMovement();
+    move_sync.fromData(data);
+    const event = BestWaifu.MZPeer.findEvent(move_sync);
+    if (!event) return;
+    event.movementGraph.addNode(move_sync);
+    event.movementGraph.applyLatest();
+    event.movementGraph.trim(32);
+});
+
+$gameNetwork.router.addNetworkDataListener("sync_event_locate", BestWaifu.MZPeer.Sides.Guest, data => {
+    if (!BestWaifu.MZPeer.isMapActive()) return;
+    const locate_sync = new BestWaifu.MZPeer.SyncEventLocate();
+    locate_sync.fromData(data);
+    const event = BestWaifu.MZPeer.findEvent(locate_sync);
+    if (!event) return;
+    event.movementGraph.addNode(locate_sync);
+    event.movementGraph.applyLatest();
+    event.movementGraph.trim(32);
+});
+
+$gameNetwork.router.addNetworkDataListener("sync_event_orientation", BestWaifu.MZPeer.Sides.Guest, data => {
+    if (!BestWaifu.MZPeer.isMapActive()) return;
+    const orientation_sync = new BestWaifu.MZPeer.SyncEventOrientation();
+    orientation_sync.fromData(data);
+    const event = BestWaifu.MZPeer.findEvent(orientation_sync);
+    if (!event) return;
+    // Anything still queued is now out of date.
+    event.discardRemoteActions();
+    event._locatingByNetwork = true;
+    event.locate(orientation_sync.getField("x", event.x), orientation_sync.getField("y", event.y));
+    event.setDirection(orientation_sync.getField("direction", event.direction()));
+});
+
+$gameNetwork.router.addNetworkDataListener("sync_event_lock", BestWaifu.MZPeer.Sides.Common, data => {
+    if (!BestWaifu.MZPeer.isMapActive()) return;
+    const lock_sync = new BestWaifu.MZPeer.SyncEventLock();
+    lock_sync.fromData(data);
+    const event = BestWaifu.MZPeer.findEvent(lock_sync);
+    if (!event) return;
+    event.applyNetworkLock(lock_sync.getField("locked", 0) === 1, lock_sync.getField("direction", 2));
+    // Tell everyone but whoever told us.
+    if ($gameNetwork.side === BestWaifu.MZPeer.Sides.Host) {
+        $gameNetwork.router.sendToGuestsExcept(lock_sync.username(), lock_sync);
+    }
+});
+
+/** Hosts also answer reorientation requests with the position of every event. */
+$gameNetwork.router.addNetworkDataListener("request", BestWaifu.MZPeer.Sides.Host, data => {
+    const request = new BestWaifu.MZPeer.NetworkRequest();
+    request.fromData(data);
+    if (request.getField("code", -1) !== BestWaifu.MZPeer.NetworkRequest.Codes.REORIENT) return;
+    if (!BestWaifu.MZPeer.isMapActive()) return;
+    for (const event of $gameMap.events()) {
+        event.sendOrientationData(request.username());
+    }
+});
+
+//#endregion
+
+//#endregion
+
+//-----------------------------------------------------------------------------
+// #region Forced Move Route Syncing
+//
+// Moves made by a forced move route on the local player do not go through
+// executeMove, so they were never being sent.
+
+Game_Player.prototype.sendMovementData = function (dir) {
+    const move_sync_data = new BestWaifu.MZPeer.SyncPlayerMovement();
+    move_sync_data.setField("direction", dir);
+    move_sync_data.setField("speed", this.realMoveSpeed());
+
+    if (!this.movementGraph) this.createMovementGraph();
+
+    this.movementGraph.tick();
+    this.movementGraph.addNode(move_sync_data);
+    move_sync_data.setField("tick", this.movementGraph.latestTick());
+    this.movementGraph.trim(64);
+
+    $gameNetwork.sendData(move_sync_data, BestWaifu.MZPeer.Sides.Common);
+};
+
+BestWaifu.MZPeer.Game_Player_moveStraight = Game_Player.prototype.moveStraight;
+Game_Player.prototype.moveStraight = function (d) {
+    BestWaifu.MZPeer.Game_Player_moveStraight.call(this, d);
+    if (this._moveRouteForcing && this.isMovementSucceeded() && $gameNetwork.isSessionReady()) {
+        this.sendMovementData(d);
+    }
+};
 
 //#endregion
 
@@ -3485,72 +4073,966 @@ Game_Event.prototype.unlock = function() {
 //
 // When any player transfers all players should transfer with them.
 
+BestWaifu.MZPeer.Game_Player_reserveTransfer = Game_Player.prototype.reserveTransfer;
+Game_Player.prototype.reserveTransfer = function (mapId, x, y, d, fadeType) {
+    BestWaifu.MZPeer.Game_Player_reserveTransfer.call(this, mapId, x, y, d, fadeType);
+    if ($gameNetwork.canSyncGameData()) {
+        $gameNetwork.sendGameData("transfer", "transfer", {
+            origin: $gameNetwork.username,
+            mapId, x, y, d, fadeType
+        });
+    }
+};
+
+BestWaifu.MZPeer.GameSync.register("transfer", payload => {
+    // The host echoes transfers back to whoever started them. They are already there.
+    if (payload.origin === $gameNetwork.username) return;
+    $gameNetwork.whenOnMap(() => {
+        $gameNetwork.applyRemote(() => {
+            $gamePlayer.reserveTransfer(payload.mapId, payload.x, payload.y, payload.d, payload.fadeType);
+        });
+    });
+});
+
+//#endregion
+
 //-----------------------------------------------------------------------------
 // #region Game Data Syncing
 //
+// Everything is synced as absolute values through $gameNetwork.queueSync.
+
+/** Variables the plugin itself sets per machine must never be synced. */
+BestWaifu.MZPeer.localVariables = new Set();
+
+BestWaifu.MZPeer.isLocalVariable = function (variableId) {
+    return variableId > 0 && (
+        variableId === BestWaifu.MZPeer.PlayerJoinVar ||
+        variableId === BestWaifu.MZPeer.PlayerLeaveVar ||
+        BestWaifu.MZPeer.localVariables.has(variableId)
+    );
+};
+
+BestWaifu.MZPeer.itemClass = function (item) {
+    if (DataManager.isItem(item)) return "item";
+    if (DataManager.isWeapon(item)) return "weapon";
+    if (DataManager.isArmor(item)) return "armor";
+    return "";
+};
+
+BestWaifu.MZPeer.itemFromData = function (dataClass, id) {
+    switch (dataClass) {
+        case "item": return $dataItems[id];
+        case "weapon": return $dataWeapons[id];
+        case "armor": return $dataArmors[id];
+        default: return null;
+    }
+};
 
 // Switches
+BestWaifu.MZPeer.Game_Switches_setValue = Game_Switches.prototype.setValue;
+Game_Switches.prototype.setValue = function (switchId, value) {
+    const old_value = this.value(switchId);
+    BestWaifu.MZPeer.Game_Switches_setValue.call(this, switchId, value);
+    if (this.value(switchId) !== old_value) {
+        $gameNetwork.queueSync(`switch:${switchId}`, "switch",
+            () => ({ id: switchId, value: $gameSwitches.value(switchId) }));
+    }
+};
+
+BestWaifu.MZPeer.GameSync.register("switch", payload => {
+    $gameSwitches.setValue(payload.id, payload.value);
+});
 
 // Self Switches
+BestWaifu.MZPeer.Game_SelfSwitches_setValue = Game_SelfSwitches.prototype.setValue;
+Game_SelfSwitches.prototype.setValue = function (key, value) {
+    const old_value = this.value(key);
+    BestWaifu.MZPeer.Game_SelfSwitches_setValue.call(this, key, value);
+    if (this.value(key) !== old_value) {
+        const key_copy = key.slice();
+        $gameNetwork.queueSync(`self_switch:${key_copy}`, "self_switch",
+            () => ({ key: key_copy, value: $gameSelfSwitches.value(key_copy) }));
+    }
+};
+
+BestWaifu.MZPeer.GameSync.register("self_switch", payload => {
+    $gameSelfSwitches.setValue(payload.key, payload.value);
+});
 
 // Variables
+BestWaifu.MZPeer.Game_Variables_setValue = Game_Variables.prototype.setValue;
+Game_Variables.prototype.setValue = function (variableId, value) {
+    const old_value = this.value(variableId);
+    BestWaifu.MZPeer.Game_Variables_setValue.call(this, variableId, value);
+    if (BestWaifu.MZPeer.isLocalVariable(variableId)) return;
+    if (this.value(variableId) !== old_value) {
+        $gameNetwork.queueSync(`variable:${variableId}`, "variable",
+            () => ({ id: variableId, value: $gameVariables.value(variableId) }));
+    }
+};
+
+BestWaifu.MZPeer.GameSync.register("variable", payload => {
+    $gameVariables.setValue(payload.id, payload.value);
+});
 
 // Gold
+BestWaifu.MZPeer.Game_Party_gainGold = Game_Party.prototype.gainGold;
+Game_Party.prototype.gainGold = function (amount) {
+    const old_gold = this._gold;
+    BestWaifu.MZPeer.Game_Party_gainGold.call(this, amount);
+    if (this._gold !== old_gold) {
+        $gameNetwork.queueSync("gold", "gold", () => ({ value: $gameParty.gold() }));
+    }
+};
 
-// EXP
+BestWaifu.MZPeer.GameSync.register("gold", payload => {
+    $gameParty._gold = payload.value;
+});
 
-// Item Gain
+// Item Gain / Item Loss (items, weapons and armors). Synced as the resulting count.
+BestWaifu.MZPeer.Game_Party_gainItem = Game_Party.prototype.gainItem;
+Game_Party.prototype.gainItem = function (item, amount, includeEquip) {
+    const old_count = this.numItems(item);
+    BestWaifu.MZPeer.Game_Party_gainItem.call(this, item, amount, includeEquip);
+    if (item && this.numItems(item) !== old_count) {
+        const dc = BestWaifu.MZPeer.itemClass(item);
+        $gameNetwork.queueSync(`item:${dc}:${item.id}`, "item",
+            () => ({ dc, id: item.id, count: $gameParty.numItems(item) }));
+    }
+};
 
-// Item Loss
+BestWaifu.MZPeer.GameSync.register("item", payload => {
+    const item = BestWaifu.MZPeer.itemFromData(payload.dc, payload.id);
+    if (!item) return;
+    $gameParty.gainItem(item, payload.count - $gameParty.numItems(item), false);
+});
 
-// HP gain
+//#region Actor Syncing
+//
+// EXP, HP, MP, TP, parameters, skills, equipment, name, class, nickname and
+// profile all live on the actor, so they travel together as one snapshot.
 
-// HP loss
+BestWaifu.MZPeer.makeActorPayload = function (actor) {
+    return {
+        id: actor.actorId(),
+        name: actor._name,
+        nickname: actor._nickname,
+        profile: actor._profile,
+        classId: actor._classId,
+        level: actor._level,
+        exp: Object.assign({}, actor._exp),
+        skills: actor._skills.slice(),
+        paramPlus: actor._paramPlus.slice(),
+        equips: actor._equips.map(e => ({ dc: e._dataClass, id: e._itemId })),
+        hp: actor._hp,
+        mp: actor._mp,
+        tp: actor._tp,
+        states: actor._states.slice(),
+        stateTurns: Object.assign({}, actor._stateTurns),
+        buffs: actor._buffs.slice(),
+        buffTurns: actor._buffTurns.slice()
+    };
+};
 
-// MP gain
+BestWaifu.MZPeer.applyActorPayload = function (p) {
+    const actor = $gameActors.actor(p.id);
+    if (!actor) return;
+    actor._name = p.name;
+    actor._nickname = p.nickname;
+    actor._profile = p.profile;
+    actor._classId = p.classId;
+    actor._level = p.level;
+    actor._exp = Object.assign({}, p.exp);
+    actor._skills = p.skills.slice();
+    actor._paramPlus = p.paramPlus.slice();
+    for (let i = 0; i < p.equips.length; i++) {
+        if (!actor._equips[i]) actor._equips[i] = new Game_Item();
+        actor._equips[i]._dataClass = p.equips[i].dc;
+        actor._equips[i]._itemId = p.equips[i].id;
+    }
+    actor._hp = p.hp;
+    actor._mp = p.mp;
+    actor._tp = p.tp;
+    actor._states = p.states.slice();
+    actor._stateTurns = Object.assign({}, p.stateTurns);
+    actor._buffs = p.buffs.slice();
+    actor._buffTurns = p.buffTurns.slice();
+    actor.refresh();
+    if ($gamePlayer) $gamePlayer.refresh();
+    if ($gameMap) $gameMap.requestRefresh();
+};
 
-// MP loss
+/**
+ * Queue an actor to be synced.
+ * @param {Game_Actor} actor
+ * @param {boolean} fromVitals Skip these in battle, the battle snapshots cover them.
+ */
+BestWaifu.MZPeer.markActorDirty = function (actor, fromVitals = false) {
+    if (!actor || typeof actor.isActor !== "function" || !actor.isActor()) return;
+    if (!$gameNetwork.canSyncGameData()) return;
+    if (fromVitals && $gameParty && $gameParty.inBattle()) return;
+    const id = actor.actorId();
+    $gameNetwork.queueSync(`actor:${id}`, "actor", () => {
+        const current = $gameActors.actor(id);
+        return current ? BestWaifu.MZPeer.makeActorPayload(current) : null;
+    });
+};
 
-// TP gain
+/** Wrap a method so that calling it marks the actor as needing a sync. */
+BestWaifu.MZPeer.aliasActorMethod = function (klass, className, methodName, fromVitals) {
+    const aliasName = `${className}_${methodName}_actor`;
+    BestWaifu.MZPeer[aliasName] = klass.prototype[methodName];
+    klass.prototype[methodName] = function () {
+        const result = BestWaifu.MZPeer[aliasName].apply(this, arguments);
+        BestWaifu.MZPeer.markActorDirty(this, fromVitals);
+        return result;
+    };
+};
 
-// TP loss
+// HP, MP, TP, states and buffs all end in a refresh
+BestWaifu.MZPeer.aliasActorMethod(Game_BattlerBase, "Game_BattlerBase", "refresh", true);
+BestWaifu.MZPeer.aliasActorMethod(Game_BattlerBase, "Game_BattlerBase", "setHp", true);
+BestWaifu.MZPeer.aliasActorMethod(Game_BattlerBase, "Game_BattlerBase", "setMp", true);
+BestWaifu.MZPeer.aliasActorMethod(Game_BattlerBase, "Game_BattlerBase", "setTp", true);
 
-// Parameter Change
+// EXP and level
+BestWaifu.MZPeer.aliasActorMethod(Game_Actor, "Game_Actor", "changeExp", false);
 
-// Skill Change
+// Name, nickname, profile and class
+BestWaifu.MZPeer.aliasActorMethod(Game_Actor, "Game_Actor", "setName", false);
+BestWaifu.MZPeer.aliasActorMethod(Game_Actor, "Game_Actor", "setNickname", false);
+BestWaifu.MZPeer.aliasActorMethod(Game_Actor, "Game_Actor", "setProfile", false);
+BestWaifu.MZPeer.aliasActorMethod(Game_Actor, "Game_Actor", "changeClass", false);
 
-// Equipment Change
+// Skills and parameters
+BestWaifu.MZPeer.aliasActorMethod(Game_Actor, "Game_Actor", "learnSkill", false);
+BestWaifu.MZPeer.aliasActorMethod(Game_Actor, "Game_Actor", "forgetSkill", false);
+BestWaifu.MZPeer.aliasActorMethod(Game_Actor, "Game_Actor", "addParam", false);
+// Equipment
+BestWaifu.MZPeer.aliasActorMethod(Game_Actor, "Game_Actor", "changeEquip", false);
+BestWaifu.MZPeer.aliasActorMethod(Game_Actor, "Game_Actor", "forceChangeEquip", false);
+BestWaifu.MZPeer.aliasActorMethod(Game_Actor, "Game_Actor", "discardEquip", false);
 
-// Name Change
+BestWaifu.MZPeer.GameSync.register("actor", payload => {
+    BestWaifu.MZPeer.applyActorPayload(payload);
+});
 
-// Class Change
-
-// Nickname Change
-
-// Profile Change
-
+//#endregion
 
 //#endregion
 
 //#region Timer Syncing
+//
+// The host is the authority. Both sides tick the timer locally and the host
+// periodically corrects drift.
+
+BestWaifu.MZPeer.queueTimerSync = function () {
+    $gameNetwork.queueSync("timer", "timer", () => ({
+        working: $gameTimer._working,
+        frames: $gameTimer._frames
+    }));
+};
+
+BestWaifu.MZPeer.Game_Timer_start = Game_Timer.prototype.start;
+Game_Timer.prototype.start = function (count) {
+    BestWaifu.MZPeer.Game_Timer_start.call(this, count);
+    BestWaifu.MZPeer.queueTimerSync();
+};
+
+BestWaifu.MZPeer.Game_Timer_stop = Game_Timer.prototype.stop;
+Game_Timer.prototype.stop = function () {
+    BestWaifu.MZPeer.Game_Timer_stop.call(this);
+    BestWaifu.MZPeer.queueTimerSync();
+};
+
+BestWaifu.MZPeer.Game_Timer_update = Game_Timer.prototype.update;
+Game_Timer.prototype.update = function (sceneActive) {
+    BestWaifu.MZPeer.Game_Timer_update.call(this, sceneActive);
+    if ($gameNetwork.side === BestWaifu.MZPeer.Sides.Host && this._working && Graphics.frameCount % 300 === 0) {
+        BestWaifu.MZPeer.queueTimerSync();
+    }
+};
+
+BestWaifu.MZPeer.GameSync.register("timer", payload => {
+    $gameTimer._frames = payload.frames;
+    $gameTimer._working = payload.working;
+});
 
 //#endregion
-
 
 //-----------------------------------------------------------------------------
 // #region Battle Syncing
 //
-// The meat and potatos of it all. Complex syncing of battle mechanics and state.
+
+//#region Battle Helpers
+
+BestWaifu.MZPeer.resultKeys = [
+    "used", "missed", "evaded", "physical", "drain", "critical", "success",
+    "hpAffected", "hpDamage", "mpDamage", "tpDamage",
+    "addedStates", "removedStates", "addedBuffs", "addedDebuffs", "removedBuffs"
+];
+
+/** Who controls this actor? The username of its player, or the host if nobody owns it. */
+BestWaifu.MZPeer.actorOwner = function (actor) {
+    if (!actor) return "";
+    const hostName = $gameNetwork.side === BestWaifu.MZPeer.Sides.Guest ? $gameNetwork.hostUsername : $gameNetwork.username;
+    const players = $gameSystem.players();
+    for (const N of Object.keys(players)) {
+        if ($gameSystem.actorForNumber(N) !== actor) continue;
+        const owner = players[N];
+        if ($gameNetwork.side === BestWaifu.MZPeer.Sides.Host && owner !== $gameNetwork.username) {
+            const connected = $gameNetwork.peerConnections.some(c => c.open && c.metadata?.username === owner);
+            if (!connected) return hostName;
+        }
+        return owner;
+    }
+    return hostName;
+};
+
+BestWaifu.MZPeer.isLocalActor = function (actor) {
+    return !!actor && BestWaifu.MZPeer.actorOwner(actor) === $gameNetwork.username;
+};
+
+BestWaifu.MZPeer.isRemoteActor = function (actor) {
+    return !!actor && $gameNetwork.side !== BestWaifu.MZPeer.Sides.Local && !BestWaifu.MZPeer.isLocalActor(actor);
+};
+
+/** Is the host waiting on a guest to choose commands? */
+BestWaifu.MZPeer.isWaitingOnRemoteInput = function () {
+    return $gameNetwork.side === BestWaifu.MZPeer.Sides.Host &&
+        BattleManager.isInputting() &&
+        BestWaifu.MZPeer.isRemoteActor(BattleManager.actor());
+};
+
+BestWaifu.MZPeer.battlerRef = function (battler) {
+    return battler.isActor() ? { "actor": battler.actorId() } : { "enemy": battler.index() };
+};
+
+BestWaifu.MZPeer.resolveBattler = function (ref) {
+    if (!ref) return null;
+    if (ref.actor !== undefined) return $gameActors.actor(ref.actor);
+    if (ref.enemy !== undefined) return $gameTroop.members()[ref.enemy] || null;
+    return null;
+};
+
+/** Turn an argument of a battle log method into something that can cross the wire. */
+BestWaifu.MZPeer.serializeBattleParam = function (value) {
+    if (value instanceof Game_Battler) {
+        const result = {};
+        for (const key of BestWaifu.MZPeer.resultKeys) {
+            const v = value.result()[key];
+            result[key] = Array.isArray(v) ? v.slice() : v;
+        }
+        return {
+            "battler": BestWaifu.MZPeer.battlerRef(value),
+            "vitals": { hp: value.hp, mp: value.mp, tp: value.tp },
+            "result": result
+        };
+    }
+    if (value instanceof Game_Action) {
+        return {
+            "action": {
+                "subject": BestWaifu.MZPeer.battlerRef(value.subject()),
+                "dc": value._item._dataClass,
+                "id": value._item._itemId,
+                "forcing": !!value._forcing
+            }
+        };
+    }
+    if (Array.isArray(value)) return value.map(BestWaifu.MZPeer.serializeBattleParam);
+    if (value === null || value === undefined) return null;
+    if (["number", "string", "boolean"].includes(typeof value)) return value;
+    return null;
+};
+
+BestWaifu.MZPeer.deserializeBattleParam = function (value) {
+    if (Array.isArray(value)) return value.map(BestWaifu.MZPeer.deserializeBattleParam);
+    if (value && typeof value === "object") {
+        if (value.battler) {
+            const battler = BestWaifu.MZPeer.resolveBattler(value.battler);
+            if (!battler) return null;
+            battler._hp = value.vitals.hp;
+            battler._mp = value.vitals.mp;
+            battler._tp = value.vitals.tp;
+            for (const key of BestWaifu.MZPeer.resultKeys) {
+                const v = value.result[key];
+                battler.result()[key] = Array.isArray(v) ? v.slice() : v;
+            }
+            return battler;
+        }
+        if (value.action) {
+            const subject = BestWaifu.MZPeer.resolveBattler(value.action.subject);
+            if (!subject) return null;
+            const action = new Game_Action(subject, value.action.forcing);
+            if (value.action.dc === "skill") action.setSkill(value.action.id);
+            if (value.action.dc === "item") action.setItem(value.action.id);
+            return action;
+        }
+        return null;
+    }
+    return value;
+};
+
+BestWaifu.MZPeer.battlerState = function (battler) {
+    return {
+        hp: battler._hp,
+        mp: battler._mp,
+        tp: battler._tp,
+        states: battler._states.slice(),
+        stateTurns: Object.assign({}, battler._stateTurns),
+        buffs: battler._buffs.slice(),
+        buffTurns: battler._buffTurns.slice(),
+        tpbState: battler._tpbState,
+        tpbChargeTime: battler._tpbChargeTime,
+        tpbCastTime: battler._tpbCastTime,
+        tpbIdleTime: battler._tpbIdleTime,
+        hidden: !!battler._hidden
+    };
+};
+
+/** Returns true if anything the player can see changed. */
+BestWaifu.MZPeer.applyBattlerState = function (battler, s) {
+    if (!battler || !s) return false;
+    const before = [battler._hp, battler._mp, battler._tp, battler._states.join(",")].join("|");
+    battler._hp = s.hp;
+    battler._mp = s.mp;
+    battler._tp = s.tp;
+    battler._states = s.states.slice();
+    battler._stateTurns = Object.assign({}, s.stateTurns);
+    battler._buffs = s.buffs.slice();
+    battler._buffTurns = s.buffTurns.slice();
+    if (s.tpbState !== undefined) battler._tpbState = s.tpbState;
+    if (s.tpbChargeTime !== undefined) battler._tpbChargeTime = s.tpbChargeTime;
+    if (s.tpbCastTime !== undefined) battler._tpbCastTime = s.tpbCastTime;
+    if (s.tpbIdleTime !== undefined) battler._tpbIdleTime = s.tpbIdleTime;
+    if (battler.isEnemy()) battler._hidden = s.hidden;
+    if (typeof battler.requestMotionRefresh === "function") battler.requestMotionRefresh();
+    const after = [battler._hp, battler._mp, battler._tp, battler._states.join(",")].join("|");
+    return before !== after;
+};
+
+BestWaifu.MZPeer.makeBattleSnapshot = function () {
+    const actor = BattleManager._currentActor;
+    return {
+        turn: $gameTroop.turnCount(),
+        inputting: !!BattleManager._inputting,
+        actor: actor ? actor.actorId() : 0,
+        serial: $gameNetwork.battleInputSerial,
+        actors: $gameParty.battleMembers().map(a => Object.assign({ id: a.actorId() }, BestWaifu.MZPeer.battlerState(a))),
+        enemies: $gameTroop.members().map(BestWaifu.MZPeer.battlerState)
+    };
+};
+
+//#endregion
+
+//#region Host Battle Streaming
+
+/** Called when a battle scene is created on the host. Tells guests to join it. */
+$gameNetwork.beginHostBattle = function () {
+    if (!this.isSessionReady()) return;
+    this.battleId++;
+    this.battleOrder = 0;
+    this.battleInputSerial = 0;
+    this.battleSnapshotDirty = false;
+    this.battleSnapshotTimer = 0;
+    this.battleHosting = true;
+    this.sendBattleEvent("start", {
+        troopId: $gameTroop._troopId,
+        canEscape: !!BattleManager._canEscape,
+        canLose: !!BattleManager._canLose,
+        preemptive: !!BattleManager._preemptive,
+        surprise: !!BattleManager._surprise
+    });
+    this.pushLog(`[Host] Battle ${this.battleId} started for guests.`);
+};
+
+/** Add an event to the ordered, reliable battle stream. */
+$gameNetwork.sendBattleEvent = function (kind, payload) {
+    if (!this.isSessionReady()) return;
+    const battle_event = new BestWaifu.MZPeer.SyncBattleEvent();
+    this.battleOrder++;
+    battle_event.setField("tick", this.battleOrder);
+    battle_event.setField("kind", kind);
+    battle_event.setField("battle", this.battleId);
+    battle_event.setField("payload", payload);
+    this.router.sendReliableToGuests(battle_event, `${this.battleId}-${this.battleOrder}`);
+};
+
+$gameNetwork.sendBattleLog = function (methodName, params) {
+    if (!this.battleHosting) return;
+    this.sendBattleEvent("log", {
+        name: methodName,
+        params: params.map(BestWaifu.MZPeer.serializeBattleParam)
+    });
+};
+
+$gameNetwork.sendBattleSnapshot = function () {
+    this.battleSnapshotDirty = false;
+    this.battleSnapshotTimer = 0;
+    if (!this.battleHosting || !this.isSessionReady()) return;
+    const state_sync = new BestWaifu.MZPeer.SyncBattleState();
+    this.syncSeq++;
+    state_sync.setField("tick", this.syncSeq);
+    state_sync.setField("payload", BestWaifu.MZPeer.makeBattleSnapshot());
+    this.router.sendToGuests(state_sync);
+};
+
+$gameNetwork.updateBattleSync = function () {
+    this.battleSnapshotTimer++;
+    const interval = BattleManager.isTpb() ? 10 : 60;
+    if (this.battleSnapshotDirty || this.battleSnapshotTimer >= interval) {
+        this.sendBattleSnapshot();
+    }
+};
+
+$gameNetwork.sendBattleEnd = function () {
+    if (!this.battleHosting) return;
+    this.sendBattleEvent("end", {
+        escaped: !!BattleManager._escaped,
+        snapshot: BestWaifu.MZPeer.makeBattleSnapshot()
+    });
+    this.battleHosting = false;
+};
+
+// Forward everything the host's battle log is told to do.
+BestWaifu.MZPeer.Window_BattleLog_push = Window_BattleLog.prototype.push;
+Window_BattleLog.prototype.push = function (methodName) {
+    // Guests only run what the host sent them.
+    if ($gameNetwork.battleMirror && !$gameNetwork.applyingRemote) return;
+    BestWaifu.MZPeer.Window_BattleLog_push.apply(this, arguments);
+    if ($gameNetwork.battleHosting) {
+        $gameNetwork.sendBattleLog(methodName, Array.prototype.slice.call(arguments, 1));
+    }
+};
+
+BestWaifu.MZPeer.Scene_Battle_create = Scene_Battle.prototype.create;
+Scene_Battle.prototype.create = function () {
+    BestWaifu.MZPeer.Scene_Battle_create.call(this);
+    if ($gameNetwork.side === BestWaifu.MZPeer.Sides.Host && !$gameNetwork.battleMirror) {
+        $gameNetwork.beginHostBattle();
+    }
+};
+
+BestWaifu.MZPeer.Scene_Battle_update = Scene_Battle.prototype.update;
+Scene_Battle.prototype.update = function () {
+    BestWaifu.MZPeer.Scene_Battle_update.call(this);
+    if ($gameNetwork.battleHosting) $gameNetwork.updateBattleSync();
+};
+
+BestWaifu.MZPeer.Scene_Battle_terminate = Scene_Battle.prototype.terminate;
+Scene_Battle.prototype.terminate = function () {
+    BestWaifu.MZPeer.Scene_Battle_terminate.call(this);
+    const wasHost = $gameNetwork.battleHosting || $gameNetwork.side === BestWaifu.MZPeer.Sides.Host;
+    $gameNetwork.battleHosting = false;
+    $gameNetwork.battleMirror = false;
+    // Battle is over, so the out-of-battle actor sync can carry the final state to guests.
+    if (wasHost) {
+        for (const actor of $gameParty.members()) BestWaifu.MZPeer.markActorDirty(actor);
+    }
+};
+
+// Snapshot whenever the battle moves to a new step.
+for (const methodName of ["endAction", "startTurn", "endTurn", "startInput"]) {
+    const aliasName = `BattleManager_${methodName}_net`;
+    BestWaifu.MZPeer[aliasName] = BattleManager[methodName];
+    BattleManager[methodName] = function () {
+        BestWaifu.MZPeer[aliasName].apply(this, arguments);
+        if ($gameNetwork.battleHosting) $gameNetwork.battleSnapshotDirty = true;
+    };
+}
+
+BestWaifu.MZPeer.BattleManager_updateBattleEnd = BattleManager.updateBattleEnd;
+BattleManager.updateBattleEnd = function () {
+    $gameNetwork.sendBattleEnd();
+    BestWaifu.MZPeer.BattleManager_updateBattleEnd.call(this);
+};
+
+BestWaifu.MZPeer.BattleManager_abort = BattleManager.abort;
+BattleManager.abort = function () {
+    if ($gameNetwork.battleHosting) {
+        $gameNetwork.sendBattleEvent("abort", {});
+        $gameNetwork.battleHosting = false;
+    }
+    BestWaifu.MZPeer.BattleManager_abort.call(this);
+};
+
+//#endregion
+
+//#region Guest Battle Mirroring
+
+$gameNetwork.router.addNetworkDataListener("sync_battle_event", BestWaifu.MZPeer.Sides.Guest, data => {
+    const battle_event = new BestWaifu.MZPeer.SyncBattleEvent();
+    battle_event.fromData(data);
+    $gameNetwork.receiveBattleEvent(battle_event);
+});
+
+/** Puts the battle stream back in order and drops duplicates. */
+$gameNetwork.receiveBattleEvent = function (battle_event) {
+    const battle = battle_event.getField("battle", 0);
+    const order = battle_event.getField("tick", 0);
+
+    if (battle < this.battleId) return; // A battle that is already over
+    if (battle > this.battleId) {
+        this.battleId = battle;
+        this.battleExpected = 1;
+        this.battleBuffer = {};
+    }
+    if (order < this.battleExpected) return; // Duplicate
+
+    this.battleBuffer[order] = battle_event;
+    while (this.battleBuffer[this.battleExpected]) {
+        const next = this.battleBuffer[this.battleExpected];
+        delete this.battleBuffer[this.battleExpected];
+        this.battleExpected++;
+        this.battleInbox.push(next);
+    }
+};
+
+$gameNetwork.router.addNetworkDataListener("sync_battle_state", BestWaifu.MZPeer.Sides.Guest, data => {
+    const state_sync = new BestWaifu.MZPeer.SyncBattleState();
+    state_sync.fromData(data);
+    const tick = state_sync.getField("tick", 0);
+    if (tick <= $gameNetwork.battleSnapshotTick) return;
+    $gameNetwork.battleSnapshotTick = tick;
+    $gameNetwork.applyBattleSnapshot(state_sync.getField("payload", {}));
+});
+
+/** Starts the same battle the host started. */
+$gameNetwork.startMirrorBattle = function (payload) {
+    this.pushLog(`[Guest] Joining host battle with troop ${payload.troopId}.`);
+    this.battleMirror = true;
+    this.battleInputHandled = 0;
+    this.battleInputSerial = 0;
+    BattleManager.setup(payload.troopId, payload.canEscape, payload.canLose);
+    BattleManager._preemptive = payload.preemptive;
+    BattleManager._surprise = payload.surprise;
+    $gamePlayer.makeEncounterCount();
+    SceneManager.push(Scene_Battle);
+};
+
+$gameNetwork.endMirrorBattle = function (payload) {
+    this.applyBattleSnapshot(payload.snapshot, true);
+    BattleManager._escaped = !!payload.escaped;
+    BattleManager._phase = "battleEnd";
+    BattleManager._inputting = false;
+    BattleManager._currentActor = null;
+    BattleManager.updateBattleEnd();
+};
+
+/** Runs the ordered stream once the scenes are ready for it. */
+$gameNetwork.processBattleInbox = function () {
+    while (this.battleInbox.length > 0) {
+        const battle_event = this.battleInbox[0];
+        const kind = battle_event.getField("kind", "");
+        const payload = battle_event.getField("payload", {});
+
+        if (kind === "start") {
+            if (!(SceneManager._scene instanceof Scene_Map) || SceneManager.isSceneChanging()) return;
+            this.battleInbox.shift();
+            this.startMirrorBattle(payload);
+            return;
+        }
+
+        // Anything else belongs to a battle we are not in.
+        if (!this.battleMirror) {
+            this.battleInbox.shift();
+            continue;
+        }
+
+        const scene = SceneManager._scene;
+        if (!(scene instanceof Scene_Battle) || !scene.isActive() || SceneManager.isSceneChanging()) return;
+
+        switch (kind) {
+            case "log": {
+                this.battleInbox.shift();
+                const params = (payload.params || []).map(BestWaifu.MZPeer.deserializeBattleParam);
+                const logWindow = scene._logWindow;
+                if (logWindow && typeof logWindow[payload.name] === "function") {
+                    this.applyRemote(() => logWindow.push(payload.name, ...params));
+                }
+                break;
+            }
+            case "end":
+                // Let the last animations and messages finish first.
+                if (BattleManager.isBusy()) return;
+                this.battleInbox.shift();
+                this.endMirrorBattle(payload);
+                return;
+            case "abort":
+                this.battleInbox.shift();
+                BattleManager.abort();
+                break;
+            default:
+                this.battleInbox.shift();
+                break;
+        }
+    }
+};
+
+$gameNetwork.applyBattleSnapshot = function (s, force = false) {
+    const scene = SceneManager._scene;
+    if (!this.battleMirror || !(scene instanceof Scene_Battle) || !s) return;
+
+    let changed = false;
+    for (const actorState of s.actors || []) {
+        if (BestWaifu.MZPeer.applyBattlerState($gameActors.actor(actorState.id), actorState)) changed = true;
+    }
+    const enemies = $gameTroop.members();
+    (s.enemies || []).forEach((enemyState, index) => {
+        if (BestWaifu.MZPeer.applyBattlerState(enemies[index], enemyState)) changed = true;
+    });
+    $gameTroop._turnCount = s.turn;
+
+    if (changed && scene._statusWindow) scene._statusWindow.refresh();
+    if (!force) this.mirrorBattleInput(s);
+};
+
+/** Opens the command window for a guest's own actor when the host says it is their turn. */
+$gameNetwork.mirrorBattleInput = function (s) {
+    if (BattleManager.isBattleEnd()) return;
+    const actor = s.actor > 0 ? $gameActors.actor(s.actor) : null;
+    const mine = s.inputting && actor && BestWaifu.MZPeer.isLocalActor(actor);
+
+    if (mine) {
+        if (s.serial > this.battleInputHandled) {
+            this.battleInputHandled = s.serial;
+            this.battleInputSerial = s.serial;
+            actor.makeActions();
+            BattleManager._phase = "input";
+            BattleManager._inputting = true;
+            BattleManager._currentActor = actor;
+            BattleManager.startActorInput();
+        }
+    } else if (BattleManager._currentActor && s.serial > this.battleInputSerial) {
+        // The host moved on without us (for example the input was cancelled).
+        BattleManager._currentActor.setActionState("waiting");
+        BattleManager._currentActor = null;
+        BattleManager._inputting = false;
+    }
+};
+
+// Guests never run battle logic.
+BestWaifu.MZPeer.BattleManager_update = BattleManager.update;
+BattleManager.update = function (timeActive) {
+    if ($gameNetwork.battleMirror) {
+        this.updateMirror();
+        return;
+    }
+    BestWaifu.MZPeer.BattleManager_update.call(this, timeActive);
+};
+
+BattleManager.updateMirror = function () {
+    $gameParty.requestMotionRefresh();
+    if (this.isBusy()) return;
+    this.checkAbort();
+};
+
+//#endregion
 
 //#region Standard Turn Battle
+//
+// Input phase: each actor is commanded by its owner.
+// * Guest: when the host's snapshot says it is the guest's actor, open the
+//   command window locally. When the guest finishes, send the actions.
+// * Host: no command window for actors owned by guests. Wait for their
+//   command, then carry on exactly as if a local player had finished.
+
+/** Host: remember a new input started, so late commands and snapshots can be told apart. */
+BestWaifu.MZPeer.BattleManager_startActorInput = BattleManager.startActorInput;
+BattleManager.startActorInput = function () {
+    BestWaifu.MZPeer.BattleManager_startActorInput.call(this);
+    if ($gameNetwork.battleHosting && this._currentActor) {
+        $gameNetwork.battleInputSerial++;
+        $gameNetwork.sendBattleSnapshot();
+    }
+};
+
+/** Guest: send the finished actions to the host instead of moving on locally. */
+BestWaifu.MZPeer.BattleManager_selectNextCommand = BattleManager.selectNextCommand;
+BattleManager.selectNextCommand = function () {
+    if (!$gameNetwork.battleMirror) {
+        BestWaifu.MZPeer.BattleManager_selectNextCommand.call(this);
+        return;
+    }
+    const actor = this._currentActor;
+    if (!actor) return;
+    if (actor.selectNextCommand()) return;
+    actor.setActionState("waiting");
+    $gameNetwork.sendBattleCommand(actor);
+    this._currentActor = null;
+    this._inputting = false;
+};
+
+/** Guests can only step back through their own actor's actions. */
+BestWaifu.MZPeer.BattleManager_selectPreviousCommand = BattleManager.selectPreviousCommand;
+BattleManager.selectPreviousCommand = function () {
+    if (!$gameNetwork.battleMirror) {
+        BestWaifu.MZPeer.BattleManager_selectPreviousCommand.call(this);
+        return;
+    }
+    if (this._currentActor) this._currentActor.selectPreviousCommand();
+};
+
+$gameNetwork.sendBattleCommand = function (actor) {
+    const command_sync = new BestWaifu.MZPeer.SyncBattleCommand();
+    command_sync.setField("actor_id", actor.actorId());
+    command_sync.setField("serial", this.battleInputSerial);
+    command_sync.setField("actions", actor._actions.map(a => ({
+        dc: a._item._dataClass,
+        id: a._item._itemId,
+        target: a._targetIndex
+    })));
+    this.router.sendReliable(this.hostUsername, command_sync,
+        `${this.username}-${actor.actorId()}-${this.battleInputSerial}`);
+};
+
+$gameNetwork.router.addNetworkDataListener("sync_battle_command", BestWaifu.MZPeer.Sides.Host, data => {
+    const command_sync = new BestWaifu.MZPeer.SyncBattleCommand();
+    command_sync.fromData(data);
+    if (!$gameNetwork.battleHosting) return;
+
+    const actor = $gameActors.actor(command_sync.getField("actor_id", 0));
+    if (!actor || BattleManager._currentActor !== actor) {
+        $gameNetwork.pushLog("[Host] Ignoring a command for an actor that is not inputting.");
+        return;
+    }
+    if (command_sync.getField("serial", -1) !== $gameNetwork.battleInputSerial) {
+        $gameNetwork.pushLog("[Host] Ignoring a stale battle command.");
+        return;
+    }
+    if (BestWaifu.MZPeer.actorOwner(actor) !== command_sync.username()) {
+        $gameNetwork.pushLog(`[Host] ${command_sync.username()} tried to command an actor they do not own.`);
+        return;
+    }
+
+    const actions = [];
+    for (const entry of command_sync.getField("actions", [])) {
+        const action = new Game_Action(actor);
+        if (entry.dc === "skill") action.setSkill(entry.id);
+        else if (entry.dc === "item") action.setItem(entry.id);
+        else continue;
+        action.setTarget(entry.target);
+        actions.push(action);
+    }
+    if (actions.length > 0) {
+        actor._actions = actions;
+        actor._actionInputIndex = actions.length - 1;
+    }
+    // Carries on exactly as if a local player finished choosing.
+    BattleManager.selectNextCommand();
+    $gameNetwork.battleSnapshotDirty = true;
+});
+
+/** Host: no command window for actors a guest controls. */
+BestWaifu.MZPeer.Scene_Battle_changeInputWindow = Scene_Battle.prototype.changeInputWindow;
+Scene_Battle.prototype.changeInputWindow = function () {
+    if (BestWaifu.MZPeer.isWaitingOnRemoteInput()) {
+        this.hideSubInputWindows();
+        this.endCommandSelection();
+        return;
+    }
+    BestWaifu.MZPeer.Scene_Battle_changeInputWindow.call(this);
+};
+
+// Guests do not roll their own random encounters. The host's steps decide.
+BestWaifu.MZPeer.Game_Player_canEncounter = Game_Player.prototype.canEncounter;
+Game_Player.prototype.canEncounter = function () {
+    if ($gameNetwork.side === BestWaifu.MZPeer.Sides.Guest) return false;
+    return BestWaifu.MZPeer.Game_Player_canEncounter.call(this);
+};
 
 //#endregion
 
 //#region Active Turn Battle (Wait)
+//
+// In Wait mode time stops while somebody is choosing a command. The host
+// cannot see a guest's windows, so it stops time while it waits for them.
+
+BestWaifu.MZPeer.Scene_Battle_isTimeActive = Scene_Battle.prototype.isTimeActive;
+Scene_Battle.prototype.isTimeActive = function () {
+    if (BattleManager.isTpb() && !BattleManager.isActiveTpb() && BestWaifu.MZPeer.isWaitingOnRemoteInput()) {
+        return false;
+    }
+    return BestWaifu.MZPeer.Scene_Battle_isTimeActive.call(this);
+};
 
 //#endregion
 
 //#region Active Turn Battle (Realtime)
+//
+// In Realtime mode time keeps flowing while a guest decides. Nothing extra is
+// needed on the host. Guests get TPB gauges from the snapshots, which are sent
+// every 10 frames in any TPB mode (see $gameNetwork.updateBattleSync).
+
+//#endregion
+
+//#region Battle Processing From Events
+//
+// Guests do not start battles themselves. "Battle Processing" on a guest asks
+// the host to start it, then waits for the host to report the result so the
+// Win/Escape/Lose branches still work.
+
+BestWaifu.MZPeer.Game_Interpreter_command301 = Game_Interpreter.prototype.command301;
+Game_Interpreter.prototype.command301 = function (params) {
+    if ($gameNetwork.side !== BestWaifu.MZPeer.Sides.Guest || $gameParty.inBattle() || $gameNetwork.battleMirror) {
+        return BestWaifu.MZPeer.Game_Interpreter_command301.call(this, params);
+    }
+    let troopId;
+    if (params[0] === 0) {
+        troopId = params[1];
+    } else if (params[0] === 1) {
+        troopId = $gameVariables.value(params[1]);
+    } else {
+        troopId = $gamePlayer.makeEncounterTroopId();
+    }
+    if ($dataTroops[troopId] && $gameNetwork.isSessionReady()) {
+        $gameNetwork.battleResultCallback = n => {
+            this._branchData[this._indent] = n;
+        };
+        $gameNetwork.sendGameData("battle_request", "battle_request", {
+            origin: $gameNetwork.username,
+            troopId: troopId,
+            canEscape: !!params[2],
+            canLose: !!params[3]
+        });
+        this.setWaitMode("net_battle");
+    }
+    return true;
+};
+
+BestWaifu.MZPeer.Game_Interpreter_updateWaitMode = Game_Interpreter.prototype.updateWaitMode;
+Game_Interpreter.prototype.updateWaitMode = function () {
+    if (this._waitMode === "net_battle") {
+        if ($gameNetwork.battleResultCallback) return true;
+        this._waitMode = "";
+        return false;
+    }
+    return BestWaifu.MZPeer.Game_Interpreter_updateWaitMode.call(this);
+};
+
+BestWaifu.MZPeer.GameSync.register("battle_request", payload => {
+    if ($gameNetwork.side !== BestWaifu.MZPeer.Sides.Host) return;
+    $gameNetwork.whenOnMap(() => {
+        if ($gameParty.inBattle() || $gameNetwork.battleHosting) {
+            // Cannot start one now. -1 matches no branch.
+            $gameNetwork.sendGameData("battle_result", "battle_result", { target: payload.origin, result: -1 });
+            return;
+        }
+        BattleManager.setup(payload.troopId, payload.canEscape, payload.canLose);
+        BattleManager.setEventCallback(n => {
+            $gameNetwork.sendGameData("battle_result", "battle_result", { target: payload.origin, result: n });
+        });
+        $gamePlayer.makeEncounterCount();
+        SceneManager.push(Scene_Battle);
+    });
+});
+
+BestWaifu.MZPeer.GameSync.register("battle_result", payload => {
+    if (payload.target !== $gameNetwork.username) return;
+    const callback = $gameNetwork.battleResultCallback;
+    $gameNetwork.battleResultCallback = null;
+    if (callback) callback(payload.result);
+});
 
 //#endregion
 
@@ -3559,18 +5041,109 @@ Game_Event.prototype.unlock = function() {
 //-----------------------------------------------------------------------------
 // #region Plugin Commands
 //
-// Provide plugin commands for:
-// - Spawning the last pending player at a given position
-// #endregion
+// Needs the @command blocks added to the plugin header (see instructions).
 
+/** Run the player join variable and common event for a freshly created remote player. */
+BestWaifu.MZPeer.gameNetwork_createRemotePlayer = $gameNetwork.createRemotePlayer;
+$gameNetwork.createRemotePlayer = function (username, x, y) {
+    const count = $remotePlayers.length;
+    BestWaifu.MZPeer.gameNetwork_createRemotePlayer.call(this, username, x, y);
+    if ($remotePlayers.length <= count) return;
+    if (BestWaifu.MZPeer.PlayerJoinVar > 0) {
+        $gameVariables.setValue(BestWaifu.MZPeer.PlayerJoinVar, Number($gameSystem.numberForUser(username)));
+    }
+    if (BestWaifu.MZPeer.PlayerJoinCE > 0) {
+        $gameTemp.reserveCommonEvent(BestWaifu.MZPeer.PlayerJoinCE);
+    }
+};
+
+$gameNetwork.spawnAllPlayers = function (x, y) {
+    while (this.spawnablePlayers.length > 0) {
+        this.spawnLastPlayer(x, y);
+    }
+};
+
+/** Read a plugin command number, falling back to the host player's position. */
+BestWaifu.MZPeer.commandNumber = function (value, fallback) {
+    const n = Number(value);
+    return value === undefined || value === "" || isNaN(n) ? fallback : n;
+};
+
+PluginManager.registerCommand("MZPeer", "spawnLastPlayer", args => {
+    if ($gameNetwork.side !== BestWaifu.MZPeer.Sides.Host) return;
+    $gameNetwork.spawnLastPlayer(
+        BestWaifu.MZPeer.commandNumber(args.x, $gamePlayer.x),
+        BestWaifu.MZPeer.commandNumber(args.y, $gamePlayer.y)
+    );
+});
+
+PluginManager.registerCommand("MZPeer", "spawnAllPlayers", args => {
+    if ($gameNetwork.side !== BestWaifu.MZPeer.Sides.Host) return;
+    $gameNetwork.spawnAllPlayers(
+        BestWaifu.MZPeer.commandNumber(args.x, $gamePlayer.x),
+        BestWaifu.MZPeer.commandNumber(args.y, $gamePlayer.y)
+    );
+});
+
+PluginManager.registerCommand("MZPeer", "storePlayerNumber", args => {
+    const variableId = Number(args.variable);
+    if (!(variableId > 0)) return;
+    // Every machine stores its own number, so this variable must not sync.
+    BestWaifu.MZPeer.localVariables.add(variableId);
+    $gameVariables.setValue(variableId, Math.max(0, $gameNetwork.localPlayerNumber()));
+});
+
+PluginManager.registerCommand("MZPeer", "setMoveRoutePlayer", args => {
+    $gameNetwork.setMoveRoutePlayer(Number(args.player));
+});
+
+//#endregion
 
 //-----------------------------------------------------------------------------
 // #region Script Calls
 //
-// Provide script calls for:
-// - Redefining what "Player" refers to in a move route
+// $gameNetwork.setMoveRoutePlayer(2)   "Player" in move routes now means player 2
+// $gameNetwork.resetMoveRoutePlayer()  "Player" means the local player again
+// $gameNetwork.localPlayerNumber()     This machine's player number (-1 if none)
+// $gameNetwork.playerCount()           How many players are in the session
+// $gameNetwork.isHost()                True on the host
 
+/** Get the game character that represents the given player number. */
+$gameNetwork.characterForPlayer = function (playerNumber) {
+    const username = $gameSystem.userForNumber(playerNumber);
+    if (!username) return null;
+    if (username === this.username) return $gamePlayer;
+    return $remotePlayers.find(p => p.username === username) || null;
+};
 
+$gameNetwork.setMoveRoutePlayer = function (playerNumber) {
+    this.moveRoutePlayer = playerNumber > 0 ? playerNumber : 0;
+};
 
+$gameNetwork.resetMoveRoutePlayer = function () {
+    this.moveRoutePlayer = 0;
+};
+
+$gameNetwork.localPlayerNumber = function () {
+    return Number($gameSystem.numberForUser(this.username));
+};
+
+$gameNetwork.playerCount = function () {
+    return Object.keys($gameSystem.players()).length;
+};
+
+$gameNetwork.isHost = function () {
+    return this.side === BestWaifu.MZPeer.Sides.Host;
+};
+
+// Redefine what "Player" refers to in a move route
+BestWaifu.MZPeer.Game_Interpreter_character = Game_Interpreter.prototype.character;
+Game_Interpreter.prototype.character = function (param) {
+    if (param < 0 && $gameNetwork.moveRoutePlayer > 0 && !$gameParty.inBattle()) {
+        const target = $gameNetwork.characterForPlayer($gameNetwork.moveRoutePlayer);
+        if (target) return target;
+    }
+    return BestWaifu.MZPeer.Game_Interpreter_character.call(this, param);
+};
 
 //#endregion
