@@ -3392,6 +3392,20 @@ Game_Follower.prototype.isVisible = function () {
     return BestWaifu.MZPeer.Game_Follower_isVisible.call(this);
 };
 
+
+// Add collisions to remote players
+Game_CharacterBase.prototype.isCollidedWithRemotePlayers = function (x, y) {
+    return $remotePlayers.some(function (p) {
+        return p !== this && !p.isThrough() && p.isNormalPriority() && p.pos(x, y);
+    }, this);
+};
+
+BestWaifu.MZPeer.Game_CharacterBase_isCollidedWithCharacters = Game_CharacterBase.prototype.isCollidedWithCharacters;
+Game_CharacterBase.prototype.isCollidedWithCharacters = function (x, y) {
+    return BestWaifu.MZPeer.Game_CharacterBase_isCollidedWithCharacters.call(this, x, y) ||
+        this.isCollidedWithRemotePlayers(x, y);
+};
+
 BestWaifu.MZPeer.Game_Player_initialize = Game_Player.prototype.initialize;
 Game_Player.prototype.initialize = function() {
     this.createMovementGraph();
