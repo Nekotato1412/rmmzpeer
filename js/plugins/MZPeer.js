@@ -130,6 +130,13 @@ BestWaifu.MZPeer.lobbyIdLength = 4;
 // Hard coded to work like Local Coop for now.
 BestWaifu.MZPeer.maxPlayers = 4;
 
+
+/** Small fix to minimize client desync. */
+SceneManager.isGameActive = function() {
+    return true;
+}
+
+
 //-----------------------------------------------------------------------------
 // #region Network Objects
 //
