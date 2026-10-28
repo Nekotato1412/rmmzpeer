@@ -3254,6 +3254,16 @@ BestWaifu.MZPeer.Remote_Player.prototype.locateByNetwork = function() {
     this.locate(locate_sync_data.getField("x", this.x), locate_sync_data.getField("y", this.y));
 };
 
+// For providing compatibility with GALV_DiagonalMovementMZ
+BestWaifu.MZPeer.Remote_Player.prototype.moveByDirection = function (dir) {
+    if (dir % 2 === 0) {
+        this.moveStraight(dir);
+    } else {
+        var dirs = Galv.DM.getHorzVertDirs(dir);
+        this.moveDiagonally(dirs[0], dirs[1]);
+    }
+};
+
 BestWaifu.MZPeer.Remote_Player.prototype.moveByNetwork = function () {
     if (!this._remoteMoveQueue.length) return;
     const queueSize = this._remoteMoveQueue.length;
@@ -3278,7 +3288,13 @@ BestWaifu.MZPeer.Remote_Player.prototype.moveByNetwork = function () {
         if (queueSize < 5) {
             this.setMoveSpeed(move_sync_data.getField("speed", this.moveSpeed()));
         }
-        this.moveStraight(move_sync_data.getField("direction"));
+
+        // Diagonal Movement Support
+        if (typeof Imported !== "undefined" && Imported.Galv_DiagonalMovement) {
+            this.moveByDirection(move_sync_data.getField("direction"));
+        } else {
+            this.moveStraight(move_sync_data.getField("direction"));
+        }
     }
 };
 
