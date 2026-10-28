@@ -35,6 +35,11 @@
  * @type variable
  * @default 0
  * 
+ * @param Auto Session Creation
+ * @desc Automatically opens a session when the host gets to the starting position.
+ * @type boolean
+ * @default false
+ * 
  * @param Auto Spawn Players
  * @desc Spawn players at the host's position as soon as they join. Turn off to use the plugin commands.
  * @type boolean
@@ -69,6 +74,11 @@
  * @default 0
  * 
  * 
+ * @command openSession
+ * @text Open Session
+ * @desc Opens a new multiplayer session as host if one hasn't been opened already. 
+ * 
+ * 
  * @help
  * 
  */
@@ -88,6 +98,7 @@ BestWaifu.MZPeer.PlayerJoinVar = parseInt(BestWaifu.MZPeer.params["Player Joined
 BestWaifu.MZPeer.PlayerLeaveCE = parseInt(BestWaifu.MZPeer.params["Player Leave Common Event"]) || 0;
 BestWaifu.MZPeer.PlayerLeaveVar = parseInt(BestWaifu.MZPeer.params["Player Left Variable"]) || 0;
 
+BestWaifu.MZPeer.shouldAutoCreateSession = BestWaifu.MZPeer.params["Auto Session Creation"] == "true";
 
 BestWaifu.MZPeer.peerIdBase = "mzpeer-91fc5e8a3652ce-";
 BestWaifu.MZPeer.lobbyIdCharacters = [
@@ -1991,7 +2002,7 @@ BestWaifu.MZPeer.Scene_Map_start = Scene_Map.prototype.start;
 Scene_Map.prototype.start = function () {
     // Session creation
     if ($gameNetwork.side === BestWaifu.MZPeer.Sides.Local) {
-        if ($gameNetwork.username) {
+        if ($gameNetwork.username && BestWaifu.MZPeer.shouldAutoCreateSession) {
             $gameNetwork.pushLog(`Session created successfully.`);
             $gameNetwork.createHostSession();
         }
@@ -5041,7 +5052,7 @@ BestWaifu.MZPeer.GameSync.register("battle_result", payload => {
 //-----------------------------------------------------------------------------
 // #region Plugin Commands
 //
-// Needs the @command blocks added to the plugin header (see instructions).
+// Needs the @command blocks added to the plugin header.
 
 /** Run the player join variable and common event for a freshly created remote player. */
 BestWaifu.MZPeer.gameNetwork_createRemotePlayer = $gameNetwork.createRemotePlayer;
@@ -5075,6 +5086,12 @@ PluginManager.registerCommand("MZPeer", "spawnLastPlayer", args => {
         BestWaifu.MZPeer.commandNumber(args.x, $gamePlayer.x),
         BestWaifu.MZPeer.commandNumber(args.y, $gamePlayer.y)
     );
+});
+
+PluginManager.registerCommand("MZPeer", "openSession", args => {
+    if ($gameNetwork.side !== BestWaifu.MZPeer.Sides.Local) return;
+    $gameNetwork.pushLog(`Session created successfully.`);
+    $gameNetwork.createHostSession();
 });
 
 PluginManager.registerCommand("MZPeer", "spawnAllPlayers", args => {
