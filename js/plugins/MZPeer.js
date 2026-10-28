@@ -2632,9 +2632,9 @@ BestWaifu.MZPeer.Window_NetworkDataLog.prototype.pushLog = function(message) {
 
 BestWaifu.MZPeer.Scene_Map_createAllWindows = Scene_Map.prototype.createAllWindows;
 Scene_Map.prototype.createAllWindows = function() {
+    this.createJoinedPlayerWindow();
     BestWaifu.MZPeer.Scene_Map_createAllWindows.call(this);
     this.createNetworkDebugConsoleWindow();
-    this.createJoinedPlayerWindow();
 };
 
 Scene_Map.prototype.createNetworkDebugConsoleWindow = function() {
