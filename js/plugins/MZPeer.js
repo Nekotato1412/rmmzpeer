@@ -2638,8 +2638,10 @@ Scene_Map.prototype.createAllWindows = function() {
 };
 
 Scene_Map.prototype.createNetworkDebugConsoleWindow = function() {
-    this._networkDebugConsoleWindow = new BestWaifu.MZPeer.Window_NetworkDataLog(this.networkDebugConsoleWindowRect());
-    this.addWindow(this._networkDebugConsoleWindow);
+    if ($gameTemp.isPlaytest()) {
+        this._networkDebugConsoleWindow = new BestWaifu.MZPeer.Window_NetworkDataLog(this.networkDebugConsoleWindowRect());
+        this.addWindow(this._networkDebugConsoleWindow);
+    }
 };
 
 Scene_Map.prototype.createJoinedPlayerWindow = function() {
