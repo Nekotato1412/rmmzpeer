@@ -3,6 +3,12 @@
  * @plugindesc Provides peer to peer multiplayer functionality to RPG Maker MZ
  * @author Best Waifu
  * 
+ * 
+ * @param Game ID
+ * @type text
+ * @desc Insert your game's name in lowercase here to avoid clashes between lobbies.
+ * @default mzpeer
+ * 
  * @param Enter Room Code Text
  * @type text
  * @default Enter Room Code
@@ -101,6 +107,7 @@ BestWaifu.MZPeer.ENTER_ROOM_CODE = String(BestWaifu.MZPeer.params["Enter Room Co
 BestWaifu.MZPeer.DISCONNECT = String(BestWaifu.MZPeer.params["Disconnect Text"] || "Disconnect");
 BestWaifu.MZPeer.SET_USERNAME = String(BestWaifu.MZPeer.params["Set Username Text"] || "Set Username");
 BestWaifu.MZPeer.NETPLAY = String(BestWaifu.MZPeer.params["Netplay Text"] || "Multiplayer");
+BestWaifu.MZPeer.GAME_ID = String(BestWaifu.MZPeer.params["Game ID"] || "mzpeer")
 
 BestWaifu.MZPeer.PlayerJoinCE = parseInt(BestWaifu.MZPeer.params["Player Join Common Event"]) || 0;
 BestWaifu.MZPeer.PlayerJoinVar = parseInt(BestWaifu.MZPeer.params["Player Joined Variable"]) || 0;
@@ -112,7 +119,7 @@ BestWaifu.MZPeer.PlayerCountVar = parseInt(BestWaifu.MZPeer.params["Player Count
 
 BestWaifu.MZPeer.shouldAutoCreateSession = BestWaifu.MZPeer.params["Auto Session Creation"] == "true";
 
-BestWaifu.MZPeer.peerIdBase = "mzpeer-91fc5e8a3652ce-";
+BestWaifu.MZPeer.peerIdBase = `${BestWaifu.MZPeer.GAME_ID}-91fc5e8a3652ce-`;
 BestWaifu.MZPeer.lobbyIdCharacters = [
     'Q', 'R', 'S', 'T', 'Z',
     'U', 'V', 'W', 'X', 'Y',
